@@ -2,13 +2,16 @@
     <string name="app_name">Edge TTS Engine</string>
     <string name="engine_name">Edge TTS Engine</string>
     <string name="status_label">Status</string>
-    <string name="status_idle">Idle</string>
     <string name="status_loading_voices">Loading voices…</string>
     <string name="status_testing_voice">Testing voice…</string>
-    <string name="status_ready_format">Ready with %1$d voices</string>
     <string name="status_error_format">Error: %1$s</string>
     <string name="default_test_text">Hello from Edge TTS on Android.</string>
     <string name="voice_label">Default voice</string>
+    <string name="voice_picker_title">Choose voice</string>
+    <string name="voice_picker_search_hint">Search voices</string>
+    <string name="voice_picker_empty">No voices match your search.</string>
+    <string name="voice_pick_button">Choose voice</string>
+    <string name="voice_not_selected">No voice selected</string>
     <string name="test_text_label">Test text</string>
     <string name="rate_label">Rate</string>
     <string name="volume_label">Volume</string>
@@ -28,4 +31,7 @@
     <string name="system_settings_unavailable">System TTS settings are unavailable on this device.</string>
     <string name="test_completed">Test utterance queued.</string>
     <string name="engine_check_passed">Voice data check passed.</string>
+    <string name="voice_section_title">Voice selection</string>
+    <string name="engine_section_title">Engine defaults</string>
+    <string name="preview_section_title">Preview</string>
 </resources>

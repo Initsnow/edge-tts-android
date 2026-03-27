@@ -5,23 +5,21 @@ import android.content.Intent;
 import android.os.Bundle;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.Voice;
-import android.widget.ArrayAdapter;
-import android.widget.AutoCompleteTextView;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.view.View;
 
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 
 import com.google.android.material.button.MaterialButton;
 import com.google.android.material.textfield.TextInputEditText;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Locale;
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -30,7 +28,8 @@ public final class MainActivity extends AppCompatActivity {
     private final ExecutorService executorService = Executors.newSingleThreadExecutor();
 
     private TextView statusView;
-    private AutoCompleteTextView voiceDropdown;
+    private View statusCard;
+    private TextInputEditText selectedVoiceEditText;
     private TextInputEditText rateEditText;
     private TextInputEditText volumeEditText;
     private TextInputEditText pitchEditText;
@@ -39,7 +38,28 @@ public final class MainActivity extends AppCompatActivity {
     private VoiceRepository voiceRepository;
     private EngineSettings engineSettings;
     private final List<VoiceInfo> voices = new ArrayList<>();
-    private final Map<String, VoiceInfo> voicesByLabel = new HashMap<>();
+    private final ActivityResultLauncher<Intent> voicePickerLauncher = registerForActivityResult(
+            new ActivityResultContracts.StartActivityForResult(),
+            result -> {
+                if (result.getResultCode() != RESULT_OK || result.getData() == null) {
+                    return;
+                }
+                String voiceShortName = result.getData().getStringExtra(
+                        VoicePickerActivity.EXTRA_RESULT_VOICE_SHORT_NAME
+                );
+                if (voiceShortName == null || voiceShortName.isEmpty()) {
+                    return;
+                }
+                engineSettings.save(
+                        voiceShortName,
+                        textOf(rateEditText, "+0%"),
+                        textOf(volumeEditText, "+0%"),
+                        textOf(pitchEditText, "+0Hz"),
+                        textOf(testTextEditText, getString(R.string.default_test_text))
+                );
+                bindSelectedVoice(voiceShortName);
+            }
+    );
     @Nullable
     private TextToSpeech textToSpeech;
 
@@ -52,13 +72,14 @@ public final class MainActivity extends AppCompatActivity {
         engineSettings = EngineSettings.from(this);
 
         statusView = findViewById(R.id.statusView);
-        voiceDropdown = findViewById(R.id.voiceDropdown);
+        statusCard = findViewById(R.id.statusCard);
+        selectedVoiceEditText = findViewById(R.id.selectedVoiceEditText);
         rateEditText = findViewById(R.id.rateEditText);
         volumeEditText = findViewById(R.id.volumeEditText);
         pitchEditText = findViewById(R.id.pitchEditText);
         testTextEditText = findViewById(R.id.testTextEditText);
 
-        MaterialButton refreshButton = findViewById(R.id.refreshVoicesButton);
+        MaterialButton openVoicePickerButton = findViewById(R.id.openVoicePickerButton);
         MaterialButton saveButton = findViewById(R.id.saveSettingsButton);
         MaterialButton testButton = findViewById(R.id.testVoiceButton);
         MaterialButton openSettingsButton = findViewById(R.id.openSystemSettingsButton);
@@ -68,7 +89,7 @@ public final class MainActivity extends AppCompatActivity {
         pitchEditText.setText(engineSettings.getDefaultPitch());
         testTextEditText.setText(engineSettings.getTestText(this));
 
-        refreshButton.setOnClickListener(view -> refreshVoices(true));
+        openVoicePickerButton.setOnClickListener(view -> openVoicePicker());
         saveButton.setOnClickListener(view -> {
             saveSettings();
             Toast.makeText(this, R.string.settings_saved, Toast.LENGTH_SHORT).show();
@@ -99,7 +120,7 @@ public final class MainActivity extends AppCompatActivity {
         executorService.execute(() -> {
             try {
                 List<VoiceInfo> loadedVoices = voiceRepository.loadVoices(forceRefresh);
-                runOnUiThread(() -> bindVoices(loadedVoices));
+                runOnUiThread(() -> bindVoices(loadedVoices, forceRefresh));
             } catch (IOException exception) {
                 runOnUiThread(() -> setStatus(getString(
                         R.string.status_error_format,
@@ -109,42 +130,16 @@ public final class MainActivity extends AppCompatActivity {
         });
     }
 
-    private void bindVoices(List<VoiceInfo> loadedVoices) {
+    private void bindVoices(List<VoiceInfo> loadedVoices, boolean forceRefresh) {
         voices.clear();
         voices.addAll(loadedVoices);
-        voicesByLabel.clear();
-        List<String> labels = new ArrayList<>(loadedVoices.size());
-        for (VoiceInfo voice : loadedVoices) {
-            String label = voice.getDisplayName();
-            labels.add(label);
-            voicesByLabel.put(label, voice);
-        }
-        ArrayAdapter<String> adapter = new ArrayAdapter<>(
-                this,
-                android.R.layout.simple_list_item_1,
-                labels
-        );
-        voiceDropdown.setAdapter(adapter);
-
-        VoiceInfo selected = voiceRepository.findByShortName(
-                loadedVoices,
-                engineSettings.getDefaultVoice()
-        );
-        if (selected == null && !loadedVoices.isEmpty()) {
-            selected = loadedVoices.get(0);
-        }
-        if (selected != null) {
-            voiceDropdown.setText(selected.getDisplayName(), false);
-        } else {
-            voiceDropdown.setHint(R.string.default_voice_missing);
-        }
-        setStatus(getString(R.string.status_ready_format, loadedVoices.size()));
+        bindSelectedVoice(engineSettings.getDefaultVoice());
+        setStatus("");
     }
 
     private void saveSettings() {
-        String voice = resolveSelectedVoice();
         engineSettings.save(
-                voice,
+                engineSettings.getDefaultVoice(),
                 textOf(rateEditText, "+0%"),
                 textOf(volumeEditText, "+0%"),
                 textOf(pitchEditText, "+0Hz"),
@@ -173,7 +168,7 @@ public final class MainActivity extends AppCompatActivity {
                     setStatus(getString(R.string.status_error_format, "TTS init failed"));
                     return;
                 }
-                String selectedVoiceName = resolveSelectedVoice();
+                String selectedVoiceName = engineSettings.getDefaultVoice();
                 if (!selectedVoiceName.isEmpty()) {
                     Set<Voice> availableVoices = textToSpeech.getVoices();
                     if (availableVoices != null) {
@@ -224,12 +219,28 @@ public final class MainActivity extends AppCompatActivity {
         }
     }
 
-    private String resolveSelectedVoice() {
-        VoiceInfo voiceInfo = voicesByLabel.get(voiceDropdown.getText().toString());
-        return voiceInfo == null ? "" : voiceInfo.getShortName();
+    private void openVoicePicker() {
+        Intent intent = new Intent(this, VoicePickerActivity.class);
+        intent.putExtra(VoicePickerActivity.EXTRA_INITIAL_VOICE_SHORT_NAME, engineSettings.getDefaultVoice());
+        voicePickerLauncher.launch(intent);
+    }
+
+    private void bindSelectedVoice(String shortName) {
+        VoiceInfo selected = voiceRepository.findByShortName(voices, shortName);
+        if (selected == null) {
+            selectedVoiceEditText.setText(R.string.voice_not_selected);
+            return;
+        }
+        selectedVoiceEditText.setText(selected.getDisplayName());
     }
 
     private void setStatus(String status) {
+        if (status == null || status.isEmpty()) {
+            statusView.setText("");
+            statusCard.setVisibility(View.GONE);
+            return;
+        }
+        statusCard.setVisibility(View.VISIBLE);
         statusView.setText(status);
     }
 

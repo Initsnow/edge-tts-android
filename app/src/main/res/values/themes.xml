@@ -1,14 +1,31 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <style name="Theme.Edgettsandroid" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+    <style name="Theme.Edgettsandroid" parent="Theme.Material3.DayNight.NoActionBar">
         <item name="colorPrimary">@color/brand_primary</item>
-        <item name="colorPrimaryVariant">@color/brand_primary_dark</item>
         <item name="colorOnPrimary">@color/white</item>
         <item name="colorSecondary">@color/brand_secondary</item>
-        <item name="colorSecondaryVariant">@color/brand_accent</item>
         <item name="colorOnSecondary">@color/black</item>
         <item name="colorSurface">@color/brand_surface</item>
         <item name="colorOnSurface">@color/brand_on_surface</item>
-        <item name="android:statusBarColor">?attr/colorPrimaryVariant</item>
+        <item name="colorSurfaceVariant">@color/brand_surface_variant</item>
+        <item name="colorOnSurfaceVariant">@color/brand_on_surface_variant</item>
+        <item name="colorOutline">@color/brand_outline</item>
+        <item name="colorTertiary">@color/brand_accent</item>
+        <item name="android:statusBarColor">?attr/colorSurface</item>
+        <item name="android:windowLightStatusBar">true</item>
         <item name="android:windowBackground">@color/brand_surface</item>
+        <item name="toolbarStyle">@style/Widget.Edgettsandroid.Toolbar</item>
+        <item name="materialCardViewFilledStyle">@style/Widget.Edgettsandroid.Card</item>
+    </style>
+
+    <style name="Widget.Edgettsandroid.Toolbar" parent="Widget.Material3.Toolbar">
+        <item name="android:background">?attr/colorSurface</item>
+        <item name="titleTextColor">?attr/colorOnSurface</item>
+        <item name="subtitleTextColor">?attr/colorOnSurfaceVariant</item>
+    </style>
+
+    <style name="Widget.Edgettsandroid.Card" parent="Widget.MaterialComponents.CardView">
+        <item name="cardBackgroundColor">?attr/colorSurfaceVariant</item>
+        <item name="strokeColor">?attr/colorOutline</item>
+        <item name="strokeWidth">1dp</item>
     </style>
 </resources>

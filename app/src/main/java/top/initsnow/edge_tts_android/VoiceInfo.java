@@ -84,4 +84,13 @@ public final class VoiceInfo {
         }
         return shortName + " • " + localeTag + " • " + gender;
     }
+
+    public boolean matchesQuery(String query) {
+        String lowered = query.toLowerCase(Locale.US);
+        return shortName.toLowerCase(Locale.US).contains(lowered)
+                || localeTag.toLowerCase(Locale.US).contains(lowered)
+                || name.toLowerCase(Locale.US).contains(lowered)
+                || friendlyName.toLowerCase(Locale.US).contains(lowered)
+                || gender.toLowerCase(Locale.US).contains(lowered);
+    }
 }

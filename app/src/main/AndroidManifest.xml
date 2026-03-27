@@ -10,6 +10,7 @@
     </queries>
 
     <application
+        android:name=".EdgeTtsApplication"
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
@@ -46,6 +47,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".VoicePickerActivity"
+            android:exported="false"
+            android:label="@string/voice_picker_title" />
 
         <service
             android:name=".EdgeTtsService"
