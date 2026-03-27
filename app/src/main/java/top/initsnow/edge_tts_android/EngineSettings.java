@@ -60,6 +60,6 @@ public final class EngineSettings {
                 .putString(KEY_VOLUME, volume)
                 .putString(KEY_PITCH, pitch)
                 .putString(KEY_TEST_TEXT, testText)
-                .commit();
+                .apply();
     }
 }

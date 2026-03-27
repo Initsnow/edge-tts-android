@@ -10,6 +10,10 @@ public final class VoiceInfo {
     private final String localeTag;
     private final String gender;
     private final String friendlyName;
+    private final Locale locale;
+    private final String iso3Language;
+    private final String iso3Country;
+    private final String normalizedSearchText;
 
     public VoiceInfo(
             String name,
@@ -18,11 +22,22 @@ public final class VoiceInfo {
             String gender,
             String friendlyName
     ) {
-        this.name = name;
-        this.shortName = shortName;
-        this.localeTag = localeTag;
-        this.gender = gender;
-        this.friendlyName = friendlyName;
+        this.name = valueOrEmpty(name);
+        this.shortName = valueOrEmpty(shortName);
+        this.localeTag = valueOrEmpty(localeTag);
+        this.gender = valueOrEmpty(gender);
+        this.friendlyName = valueOrEmpty(friendlyName);
+        this.locale = Locale.forLanguageTag(this.localeTag.replace('_', '-'));
+        this.iso3Language = computeIso3Language(locale);
+        this.iso3Country = computeIso3Country(locale);
+        this.normalizedSearchText = String.join(
+                "\n",
+                this.shortName,
+                this.localeTag,
+                this.name,
+                this.friendlyName,
+                this.gender
+        ).toLowerCase(Locale.US);
     }
 
     public static VoiceInfo fromJson(JSONObject object) {
@@ -56,26 +71,23 @@ public final class VoiceInfo {
     }
 
     public Locale toLocale() {
-        return Locale.forLanguageTag(localeTag.replace('_', '-'));
+        return locale;
     }
 
     public boolean matchesIso3(String iso3Language, String iso3Country) {
-        Locale locale = toLocale();
-        boolean languageMatches = false;
         boolean countryMatches = iso3Country == null || iso3Country.isEmpty();
-        try {
-            languageMatches = locale.getISO3Language().equalsIgnoreCase(iso3Language);
-        } catch (RuntimeException ignored) {
+        if (this.iso3Language.isEmpty() || !this.iso3Language.equalsIgnoreCase(iso3Language)) {
             return false;
         }
-        try {
-            if (!countryMatches) {
-                countryMatches = locale.getISO3Country().equalsIgnoreCase(iso3Country);
-            }
-        } catch (RuntimeException ignored) {
-            countryMatches = false;
+        if (!countryMatches) {
+            countryMatches = !this.iso3Country.isEmpty()
+                    && this.iso3Country.equalsIgnoreCase(iso3Country);
         }
-        return languageMatches && countryMatches;
+        return countryMatches;
+    }
+
+    public boolean matchesIso3Language(String iso3Language) {
+        return !this.iso3Language.isEmpty() && this.iso3Language.equalsIgnoreCase(iso3Language);
     }
 
     public String getDisplayName() {
@@ -86,11 +98,26 @@ public final class VoiceInfo {
     }
 
     public boolean matchesQuery(String query) {
-        String lowered = query.toLowerCase(Locale.US);
-        return shortName.toLowerCase(Locale.US).contains(lowered)
-                || localeTag.toLowerCase(Locale.US).contains(lowered)
-                || name.toLowerCase(Locale.US).contains(lowered)
-                || friendlyName.toLowerCase(Locale.US).contains(lowered)
-                || gender.toLowerCase(Locale.US).contains(lowered);
+        return normalizedSearchText.contains(query);
+    }
+
+    private static String computeIso3Language(Locale locale) {
+        try {
+            return locale.getISO3Language();
+        } catch (RuntimeException ignored) {
+            return "";
+        }
+    }
+
+    private static String computeIso3Country(Locale locale) {
+        try {
+            return locale.getISO3Country();
+        } catch (RuntimeException ignored) {
+            return "";
+        }
+    }
+
+    private static String valueOrEmpty(String value) {
+        return value == null ? "" : value;
     }
 }

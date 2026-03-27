@@ -10,8 +10,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 import org.json.JSONArray;
@@ -25,13 +27,18 @@ public final class VoiceRepository {
     private final Context applicationContext;
     private final SharedPreferences sharedPreferences;
     private final Object lock = new Object();
+    private final Set<String> voiceFeatures;
     private List<VoiceInfo> cachedVoices = Collections.emptyList();
+    private Map<String, VoiceInfo> cachedVoicesByShortName = Collections.emptyMap();
 
     private VoiceRepository(Context applicationContext) {
         this.applicationContext = applicationContext.getApplicationContext();
         this.sharedPreferences = PreferenceManager.getDefaultSharedPreferences(
                 this.applicationContext
         );
+        Set<String> features = new HashSet<>();
+        features.add(android.speech.tts.TextToSpeech.Engine.KEY_FEATURE_NETWORK_SYNTHESIS);
+        this.voiceFeatures = Collections.unmodifiableSet(features);
     }
 
     public static VoiceRepository getInstance(Context context) {
@@ -53,7 +60,7 @@ public final class VoiceRepository {
             if (!forceRefresh) {
                 List<VoiceInfo> storedVoices = loadStoredVoices();
                 if (!storedVoices.isEmpty()) {
-                    cachedVoices = Collections.unmodifiableList(storedVoices);
+                    updateCache(storedVoices);
                     return cachedVoices;
                 }
             }
@@ -77,7 +84,7 @@ public final class VoiceRepository {
                 voices.sort(Comparator
                         .comparing(VoiceInfo::getLocaleTag)
                         .thenComparing(VoiceInfo::getShortName));
-                cachedVoices = Collections.unmodifiableList(voices);
+                updateCache(voices);
                 sharedPreferences.edit().putString(KEY_VOICE_CACHE, json).apply();
                 return cachedVoices;
             } catch (JSONException exception) {
@@ -93,6 +100,9 @@ public final class VoiceRepository {
     }
 
     public VoiceInfo findByShortName(List<VoiceInfo> voices, String shortName) {
+        if (voices == cachedVoices) {
+            return cachedVoicesByShortName.get(shortName);
+        }
         for (VoiceInfo voice : voices) {
             if (voice.getShortName().equals(shortName)) {
                 return voice;
@@ -119,13 +129,8 @@ public final class VoiceRepository {
             }
         }
         for (VoiceInfo voice : voices) {
-            Locale locale = voice.toLocale();
-            try {
-                if (locale.getISO3Language().equalsIgnoreCase(iso3Language)) {
-                    return voice;
-                }
-            } catch (RuntimeException ignored) {
-                // Skip invalid locale data from the upstream service.
+            if (voice.matchesIso3Language(iso3Language)) {
+                return voice;
             }
         }
         return voices.isEmpty() ? null : voices.get(0);
@@ -141,21 +146,17 @@ public final class VoiceRepository {
         boolean countryMatch = false;
         boolean variantMatch = variant == null || variant.isEmpty();
         for (VoiceInfo voice : voices) {
-            Locale locale = voice.toLocale();
-            try {
-                if (locale.getISO3Language().equalsIgnoreCase(iso3Language)) {
-                    languageMatch = true;
-                    if (iso3Country == null || iso3Country.isEmpty()
-                            || locale.getISO3Country().equalsIgnoreCase(iso3Country)) {
-                        countryMatch = true;
-                        if (variant == null || variant.isEmpty()
-                                || locale.getVariant().equalsIgnoreCase(variant)) {
-                            variantMatch = true;
-                        }
+            if (voice.matchesIso3Language(iso3Language)) {
+                languageMatch = true;
+                Locale locale = voice.toLocale();
+                if (iso3Country == null || iso3Country.isEmpty()
+                        || voice.matchesIso3(iso3Language, iso3Country)) {
+                    countryMatch = true;
+                    if (variant == null || variant.isEmpty()
+                            || locale.getVariant().equalsIgnoreCase(variant)) {
+                        variantMatch = true;
                     }
                 }
-            } catch (RuntimeException ignored) {
-                // Skip invalid locale data from the upstream service.
             }
         }
         if (languageMatch && countryMatch && variantMatch) {
@@ -171,9 +172,7 @@ public final class VoiceRepository {
     }
 
     public Set<String> buildVoiceFeatures() {
-        Set<String> features = new HashSet<>();
-        features.add(android.speech.tts.TextToSpeech.Engine.KEY_FEATURE_NETWORK_SYNTHESIS);
-        return features;
+        return voiceFeatures;
     }
 
     private List<VoiceInfo> loadStoredVoices() throws IOException {
@@ -194,5 +193,14 @@ public final class VoiceRepository {
         } catch (JSONException exception) {
             throw new IOException("failed to parse cached voice list", exception);
         }
+    }
+
+    private void updateCache(List<VoiceInfo> voices) {
+        cachedVoices = Collections.unmodifiableList(new ArrayList<>(voices));
+        Map<String, VoiceInfo> voicesByShortName = new HashMap<>(cachedVoices.size());
+        for (VoiceInfo voice : cachedVoices) {
+            voicesByShortName.put(voice.getShortName(), voice);
+        }
+        cachedVoicesByShortName = Collections.unmodifiableMap(voicesByShortName);
     }
 }

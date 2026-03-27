@@ -12,20 +12,31 @@ use jni::objects::{JByteArray, JClass, JString};
 use jni::sys::{jbyteArray, jstring};
 use minimp3::{Decoder, Error as Mp3Error};
 use once_cell::sync::Lazy;
-use tokio::runtime::Builder;
+use tokio::runtime::{Builder, Runtime};
 
 type SessionMap = HashMap<String, Arc<SynthesisSession>>;
 
 static SESSIONS: Lazy<Mutex<SessionMap>> = Lazy::new(|| Mutex::new(HashMap::new()));
+static TOKIO_RUNTIME: Lazy<Runtime> = Lazy::new(|| {
+    Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime initialization failed")
+});
+
+struct ChunkBuffer {
+    chunks: VecDeque<Vec<u8>>,
+    front_offset: usize,
+}
 
 struct PcmState {
-    data: VecDeque<u8>,
+    data: ChunkBuffer,
     finished: bool,
     error: Option<String>,
 }
 
 struct Mp3State {
-    data: VecDeque<u8>,
+    data: ChunkBuffer,
     closed: bool,
     error: Option<String>,
 }
@@ -46,11 +57,67 @@ struct BlockingMp3Reader {
     stopped: Arc<AtomicBool>,
 }
 
+impl ChunkBuffer {
+    fn new() -> Self {
+        Self {
+            chunks: VecDeque::new(),
+            front_offset: 0,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.chunks.is_empty()
+    }
+
+    fn push_copy(&mut self, bytes: &[u8]) {
+        if !bytes.is_empty() {
+            self.chunks.push_back(bytes.to_vec());
+        }
+    }
+
+    fn read_into(&mut self, buf: &mut [u8]) -> usize {
+        let mut written = 0;
+        while written < buf.len() {
+            let Some(chunk) = self.chunks.front_mut() else {
+                break;
+            };
+            let available = chunk.len().saturating_sub(self.front_offset);
+            let copy_len = (buf.len() - written).min(available);
+            buf[written..written + copy_len]
+                .copy_from_slice(&chunk[self.front_offset..self.front_offset + copy_len]);
+            written += copy_len;
+            self.front_offset += copy_len;
+            if self.front_offset == chunk.len() {
+                self.chunks.pop_front();
+                self.front_offset = 0;
+            }
+        }
+        written
+    }
+
+    fn take_chunk(&mut self, max_bytes: usize) -> Option<Vec<u8>> {
+        let chunk = self.chunks.front_mut()?;
+        let available = chunk.len().saturating_sub(self.front_offset);
+        if self.front_offset == 0 && available <= max_bytes {
+            return self.chunks.pop_front();
+        }
+
+        let copy_len = available.min(max_bytes);
+        let bytes = chunk[self.front_offset..self.front_offset + copy_len].to_vec();
+        self.front_offset += copy_len;
+        if self.front_offset == chunk.len() {
+            self.chunks.pop_front();
+            self.front_offset = 0;
+        }
+        Some(bytes)
+    }
+}
+
 impl Mp3Buffer {
     fn new() -> Self {
         Self {
             state: Mutex::new(Mp3State {
-                data: VecDeque::new(),
+                data: ChunkBuffer::new(),
                 closed: false,
                 error: None,
             }),
@@ -60,7 +127,7 @@ impl Mp3Buffer {
 
     fn push(&self, bytes: &[u8]) {
         let mut state = self.state.lock().expect("mp3 state poisoned");
-        state.data.extend(bytes.iter().copied());
+        state.data.push_copy(bytes);
         self.condvar.notify_all();
     }
 
@@ -89,10 +156,7 @@ impl Read for BlockingMp3Reader {
                 return Err(IoError::new(ErrorKind::Other, error));
             }
             if !state.data.is_empty() {
-                let read_len = buf.len().min(state.data.len());
-                for (index, value) in state.data.drain(..read_len).enumerate() {
-                    buf[index] = value;
-                }
+                let read_len = state.data.read_into(buf);
                 return Ok(read_len);
             }
             if state.closed {
@@ -111,7 +175,7 @@ impl SynthesisSession {
     fn new() -> Self {
         Self {
             pcm_state: Mutex::new(PcmState {
-                data: VecDeque::new(),
+                data: ChunkBuffer::new(),
                 finished: false,
                 error: None,
             }),
@@ -122,7 +186,7 @@ impl SynthesisSession {
 
     fn push_pcm(&self, bytes: &[u8]) {
         let mut state = self.pcm_state.lock().expect("pcm state poisoned");
-        state.data.extend(bytes.iter().copied());
+        state.data.push_copy(bytes);
         self.pcm_condvar.notify_all();
     }
 
@@ -156,9 +220,7 @@ impl SynthesisSession {
         let mut state = self.pcm_state.lock().expect("pcm state poisoned");
         loop {
             if !state.data.is_empty() {
-                let read_len = max_bytes.min(state.data.len());
-                let bytes: Vec<u8> = state.data.drain(..read_len).collect();
-                return Some(bytes);
+                return state.data.take_chunk(max_bytes);
             }
             if state.finished || self.stopped.load(Ordering::SeqCst) {
                 return None;
@@ -240,40 +302,34 @@ fn spawn_synthesis_worker(
 
         let network_session = Arc::clone(&session);
         let network_buffer = Arc::clone(&mp3_buffer);
-        let network_result = Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|error| error.to_string())
-            .and_then(|runtime| {
-                runtime.block_on(async move {
-                    let client = EdgeTtsClient::new().map_err(|error| error.to_string())?;
-                    let mut stream = client
-                        .stream(
-                            text,
-                            SpeakOptions {
-                                voice,
-                                rate,
-                                volume,
-                                pitch,
-                                ..SpeakOptions::default()
-                            },
-                        )
-                        .await
-                        .map_err(|error| error.to_string())?;
+        let network_result = TOKIO_RUNTIME.block_on(async move {
+            let client = EdgeTtsClient::new().map_err(|error| error.to_string())?;
+            let mut stream = client
+                .stream(
+                    text,
+                    SpeakOptions {
+                        voice,
+                        rate,
+                        volume,
+                        pitch,
+                        ..SpeakOptions::default()
+                    },
+                )
+                .await
+                .map_err(|error| error.to_string())?;
 
-                    while let Some(event) = stream.next().await {
-                        if network_session.stopped.load(Ordering::SeqCst) {
-                            break;
-                        }
-                        match event.map_err(|error| error.to_string())? {
-                            SynthesisEvent::Audio(chunk) => network_buffer.push(&chunk),
-                            SynthesisEvent::Boundary(_) => {}
-                        }
-                    }
+            while let Some(event) = stream.next().await {
+                if network_session.stopped.load(Ordering::SeqCst) {
+                    break;
+                }
+                match event.map_err(|error| error.to_string())? {
+                    SynthesisEvent::Audio(chunk) => network_buffer.push(&chunk),
+                    SynthesisEvent::Boundary(_) => {}
+                }
+            }
 
-                    Ok::<(), String>(())
-                })
-            });
+            Ok::<(), String>(())
+        });
 
         if let Err(error) = network_result {
             mp3_buffer.fail(error.clone());
@@ -311,20 +367,14 @@ pub extern "system" fn Java_top_initsnow_edge_1tts_1android_EdgeTtsNative_native
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
 ) -> jstring {
-    let result = Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| error.to_string())
-        .and_then(|runtime| {
-            runtime.block_on(async move {
-                let voices = EdgeTtsClient::new()
-                    .map_err(|error| error.to_string())?
-                    .list_voices()
-                    .await
-                    .map_err(|error| error.to_string())?;
-                serde_json::to_string(&voices).map_err(|error| error.to_string())
-            })
-        });
+    let result = TOKIO_RUNTIME.block_on(async move {
+        let voices = EdgeTtsClient::new()
+            .map_err(|error| error.to_string())?
+            .list_voices()
+            .await
+            .map_err(|error| error.to_string())?;
+        serde_json::to_string(&voices).map_err(|error| error.to_string())
+    });
 
     into_java_string(
         &mut env,
