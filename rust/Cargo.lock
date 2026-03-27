@@ -377,8 +377,8 @@ dependencies = [
 
 [[package]]
 name = "edge-tts-rust"
-version = "0.1.0"
-source = "git+https://github.com/initsnow/edge-tts-rust?rev=06dcc648a14d9658c9938d1396390f7916df17a1#06dcc648a14d9658c9938d1396390f7916df17a1"
+version = "0.1.1"
+source = "git+https://github.com/Initsnow/edge-tts-rust?rev=be365ba476ad2856cc3e6c8035b6fe8f297615e0#be365ba476ad2856cc3e6c8035b6fe8f297615e0"
 dependencies = [
  "async-stream",
  "bytes",

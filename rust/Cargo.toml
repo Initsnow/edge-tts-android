@@ -8,7 +8,7 @@ name = "edge_tts_android"
 crate-type = ["cdylib"]
 
 [dependencies]
-edge-tts-rust = { git = "https://github.com/initsnow/edge-tts-rust", rev = "06dcc648a14d9658c9938d1396390f7916df17a1" }
+edge-tts-rust = { git = "https://github.com/Initsnow/edge-tts-rust", rev = "be365ba476ad2856cc3e6c8035b6fe8f297615e0" }
 futures-util = "0.3"
 jni = "0.21"
 minimp3 = "0.5"
