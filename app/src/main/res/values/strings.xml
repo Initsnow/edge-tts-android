@@ -24,9 +24,9 @@
     <string name="settings_saved">Settings saved.</string>
     <string name="native_library_missing">Native library is unavailable: %1$s</string>
     <string name="tts_engine_description">System TTS engine powered by Java + Rust + Edge Read Aloud.</string>
-    <string name="rate_helper">Examples: +0%%, +20%%, -15%%</string>
+    <string name="rate_helper">Examples: +0%, +20%, -15%</string>
     <string name="pitch_helper">Examples: +0Hz, +50Hz, -25Hz</string>
-    <string name="volume_helper">Examples: +0%%, +25%%, -10%%</string>
+    <string name="volume_helper">Examples: +0%, +25%, -10%</string>
     <string name="default_voice_missing">No voices loaded yet.</string>
     <string name="system_settings_unavailable">System TTS settings are unavailable on this device.</string>
     <string name="test_completed">Test utterance queued.</string>

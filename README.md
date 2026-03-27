@@ -40,7 +40,7 @@ GitHub Actions signing secrets:
 - `ANDROID_RELEASE_KEY_ALIAS`
 - `ANDROID_RELEASE_KEY_PASSWORD`
 
-If signing values are absent, `assembleRelease` still produces unsigned release APKs.
+The release workflow requires all signing secrets and fails fast if any are missing.
 
 Gradle builds the Rust JNI library for:
 

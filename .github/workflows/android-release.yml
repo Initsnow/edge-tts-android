@@ -22,6 +22,7 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+          cache: gradle
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -34,8 +35,16 @@ jobs:
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
 
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: Install cargo-binstall
+        run: cargo install cargo-binstall --locked
+
       - name: Install cargo-ndk
-        run: cargo install cargo-ndk --locked
+        run: cargo binstall cargo-ndk --no-confirm
 
       - name: Restore signing keystore
         env:
