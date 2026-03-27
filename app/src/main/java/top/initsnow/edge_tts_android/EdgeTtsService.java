@@ -1,11 +1,14 @@
 package top.initsnow.edge_tts_android;
 
+import android.content.pm.ApplicationInfo;
 import android.media.AudioFormat;
+import android.os.SystemClock;
 import android.speech.tts.SynthesisCallback;
 import android.speech.tts.SynthesisRequest;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.TextToSpeechService;
 import android.speech.tts.Voice;
+import android.util.Log;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -16,6 +19,7 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
 public final class EdgeTtsService extends TextToSpeechService {
+    private static final String TAG = "EdgeTtsLatency";
     private static final int SAMPLE_RATE_HZ = 24_000;
     private static final int CHANNEL_COUNT = 1;
     private static final int PCM_AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT;
@@ -132,6 +136,7 @@ public final class EdgeTtsService extends TextToSpeechService {
     @Override
     protected void onSynthesizeText(SynthesisRequest request, SynthesisCallback callback) {
         String requestId = UUID.randomUUID().toString();
+        long requestStartMs = SystemClock.elapsedRealtime();
         currentRequestId.set(requestId);
         try {
             List<VoiceInfo> voices = repository().loadVoices(false);
@@ -147,6 +152,9 @@ public final class EdgeTtsService extends TextToSpeechService {
             String rate = mapPercentage(request.getSpeechRate(), settings().getDefaultRate());
             String pitch = mapPitch(request.getPitch(), settings().getDefaultPitch());
             String volume = settings().getDefaultVolume();
+            logLatency("request=" + requestId
+                    + " onSynthesizeText textChars=" + text.length()
+                    + " voice=" + selectedVoice);
 
             String error = EdgeTtsNative.beginSynthesis(
                     requestId,
@@ -160,6 +168,9 @@ public final class EdgeTtsService extends TextToSpeechService {
                 callback.error(TextToSpeech.ERROR_NETWORK);
                 return;
             }
+            logLatency("request=" + requestId
+                    + " beginSynthesis returned in "
+                    + (SystemClock.elapsedRealtime() - requestStartMs) + "ms");
 
             int startStatus = callback.start(SAMPLE_RATE_HZ, PCM_AUDIO_FORMAT, CHANNEL_COUNT);
             if (startStatus != TextToSpeech.SUCCESS) {
@@ -168,15 +179,31 @@ public final class EdgeTtsService extends TextToSpeechService {
             }
 
             int maxBufferSize = Math.max(callback.getMaxBufferSize(), 8192);
+            boolean firstChunkReadLogged = false;
+            boolean firstAudioAvailableLogged = false;
             while (true) {
                 byte[] chunk = EdgeTtsNative.readPcmChunk(requestId, maxBufferSize);
                 if (chunk == null || chunk.length == 0) {
                     break;
                 }
+                if (!firstChunkReadLogged) {
+                    firstChunkReadLogged = true;
+                    logLatency("request=" + requestId
+                            + " first PCM chunk read in "
+                            + (SystemClock.elapsedRealtime() - requestStartMs)
+                            + "ms bytes=" + chunk.length);
+                }
                 int audioStatus = callback.audioAvailable(chunk, 0, chunk.length);
                 if (audioStatus != TextToSpeech.SUCCESS) {
                     callback.error(TextToSpeech.ERROR_OUTPUT);
                     return;
+                }
+                if (!firstAudioAvailableLogged) {
+                    firstAudioAvailableLogged = true;
+                    logLatency("request=" + requestId
+                            + " first audioAvailable in "
+                            + (SystemClock.elapsedRealtime() - requestStartMs)
+                            + "ms bytes=" + chunk.length);
                 }
             }
 
@@ -186,6 +213,9 @@ public final class EdgeTtsService extends TextToSpeechService {
                 return;
             }
 
+            logLatency("request=" + requestId
+                    + " synthesis done in "
+                    + (SystemClock.elapsedRealtime() - requestStartMs) + "ms");
             callback.done();
         } catch (IOException exception) {
             callback.error(TextToSpeech.ERROR_NETWORK);
@@ -201,6 +231,16 @@ public final class EdgeTtsService extends TextToSpeechService {
         if (requestId != null) {
             EdgeTtsNative.stop(requestId);
         }
+    }
+
+    private void logLatency(String message) {
+        if (isDebugLoggingEnabled()) {
+            Log.i(TAG, message);
+        }
+    }
+
+    private boolean isDebugLoggingEnabled() {
+        return (getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
     }
 
     private String resolveVoiceName(SynthesisRequest request, List<VoiceInfo> voices) {

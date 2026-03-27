@@ -1,9 +1,12 @@
 use std::collections::{HashMap, VecDeque};
+#[cfg(target_os = "android")]
+use std::ffi::CString;
 use std::io::{Error as IoError, ErrorKind, Read};
 use std::ptr::null_mut;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
+use std::time::Instant;
 
 use edge_tts_rust::{EdgeTtsClient, SpeakOptions, SynthesisEvent};
 use futures_util::StreamExt;
@@ -23,6 +26,11 @@ static TOKIO_RUNTIME: Lazy<Runtime> = Lazy::new(|| {
         .build()
         .expect("tokio runtime initialization failed")
 });
+static EDGE_TTS_CLIENT: Lazy<Result<EdgeTtsClient, String>> =
+    Lazy::new(|| EdgeTtsClient::new().map_err(|error| error.to_string()));
+
+#[cfg(target_os = "android")]
+const ANDROID_LOG_INFO: i32 = 4;
 
 struct ChunkBuffer {
     chunks: VecDeque<Vec<u8>>,
@@ -254,6 +262,10 @@ fn remove_session(request_id: &str) -> Option<Arc<SynthesisSession>> {
         .remove(request_id)
 }
 
+fn shared_client() -> Result<&'static EdgeTtsClient, String> {
+    EDGE_TTS_CLIENT.as_ref().map_err(Clone::clone)
+}
+
 fn spawn_synthesis_worker(
     request_id: String,
     session: Arc<SynthesisSession>,
@@ -264,16 +276,24 @@ fn spawn_synthesis_worker(
     pitch: String,
 ) {
     thread::spawn(move || {
+        let request_start = Instant::now();
+        log_latency(&format!(
+            "request={request_id} native worker started textChars={}",
+            text.chars().count()
+        ));
         let mp3_buffer = Arc::new(Mp3Buffer::new());
         let decoder_session = Arc::clone(&session);
         let decoder_buffer = Arc::clone(&mp3_buffer);
         let decoder_stop = Arc::clone(&session.stopped);
+        let decoder_request_id = request_id.clone();
+        let decoder_start = request_start;
 
         let decoder_handle = thread::spawn(move || {
             let mut decoder = Decoder::new(BlockingMp3Reader {
                 buffer: decoder_buffer,
                 stopped: decoder_stop,
             });
+            let mut first_pcm_logged = false;
 
             loop {
                 if decoder_session.stopped.load(Ordering::SeqCst) {
@@ -285,6 +305,14 @@ fn spawn_synthesis_worker(
                         let mut pcm_bytes = Vec::with_capacity(frame.data.len() * 2);
                         for sample in frame.data {
                             pcm_bytes.extend_from_slice(&sample.to_le_bytes());
+                        }
+                        if !first_pcm_logged {
+                            first_pcm_logged = true;
+                            log_latency(&format!(
+                                "request={decoder_request_id} first PCM frame in {}ms samples={}",
+                                decoder_start.elapsed().as_millis(),
+                                pcm_bytes.len() / 2
+                            ));
                         }
                         decoder_session.push_pcm(&pcm_bytes);
                     }
@@ -302,8 +330,9 @@ fn spawn_synthesis_worker(
 
         let network_session = Arc::clone(&session);
         let network_buffer = Arc::clone(&mp3_buffer);
+        let network_request_id = request_id.clone();
         let network_result = TOKIO_RUNTIME.block_on(async move {
-            let client = EdgeTtsClient::new().map_err(|error| error.to_string())?;
+            let client = shared_client()?;
             let mut stream = client
                 .stream(
                     text,
@@ -317,13 +346,24 @@ fn spawn_synthesis_worker(
                 )
                 .await
                 .map_err(|error| error.to_string())?;
+            let mut first_audio_logged = false;
 
             while let Some(event) = stream.next().await {
                 if network_session.stopped.load(Ordering::SeqCst) {
                     break;
                 }
                 match event.map_err(|error| error.to_string())? {
-                    SynthesisEvent::Audio(chunk) => network_buffer.push(&chunk),
+                    SynthesisEvent::Audio(chunk) => {
+                        if !first_audio_logged {
+                            first_audio_logged = true;
+                            log_latency(&format!(
+                                "request={network_request_id} first MP3 chunk in {}ms bytes={}",
+                                request_start.elapsed().as_millis(),
+                                chunk.len()
+                            ));
+                        }
+                        network_buffer.push(&chunk)
+                    }
                     SynthesisEvent::Boundary(_) => {}
                 }
             }
@@ -342,8 +382,37 @@ fn spawn_synthesis_worker(
         if session.last_error().is_none() {
             session.finish();
         }
-        let _ = request_id;
+        log_latency(&format!(
+            "request={request_id} native worker finished in {}ms",
+            request_start.elapsed().as_millis()
+        ));
     });
+}
+
+fn log_latency(message: &str) {
+    #[cfg(not(debug_assertions))]
+    let _ = message;
+
+    #[cfg(debug_assertions)]
+    #[cfg(target_os = "android")]
+    unsafe {
+        unsafe extern "C" {
+            fn __android_log_write(prio: i32, tag: *const i8, text: *const i8) -> i32;
+        }
+
+        let tag = CString::new("EdgeTtsLatency").expect("valid log tag");
+        if let Ok(text) = CString::new(message) {
+            let _ = __android_log_write(
+                ANDROID_LOG_INFO,
+                tag.as_ptr().cast(),
+                text.as_ptr().cast(),
+            );
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    #[cfg(not(target_os = "android"))]
+    eprintln!("{message}");
 }
 
 fn read_java_string(env: &mut JNIEnv<'_>, value: JString<'_>) -> Result<String, String> {
@@ -368,8 +437,7 @@ pub extern "system" fn Java_top_initsnow_edge_1tts_1android_EdgeTtsNative_native
     _class: JClass<'_>,
 ) -> jstring {
     let result = TOKIO_RUNTIME.block_on(async move {
-        let voices = EdgeTtsClient::new()
-            .map_err(|error| error.to_string())?
+        let voices = shared_client()?
             .list_voices()
             .await
             .map_err(|error| error.to_string())?;
