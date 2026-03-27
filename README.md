@@ -27,12 +27,11 @@ Build release APKs:
 
 Optional release signing:
 
-- Set `android.release.keystore.path`, `android.release.store.password`, `android.release.key.alias`, `android.release.key.password`
-- Or provide the equivalent env vars:
-  `ANDROID_RELEASE_KEYSTORE_PATH`,
-  `ANDROID_RELEASE_STORE_PASSWORD`,
-  `ANDROID_RELEASE_KEY_ALIAS`,
-  `ANDROID_RELEASE_KEY_PASSWORD`
+- For local builds, pass signing values via Gradle properties:
+  `-Pandroid.injected.signing.store.file=...`,
+  `-Pandroid.injected.signing.store.password=...`,
+  `-Pandroid.injected.signing.key.alias=...`,
+  `-Pandroid.injected.signing.key.password=...`
 
 GitHub Actions signing secrets:
 

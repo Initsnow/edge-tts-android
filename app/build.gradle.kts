@@ -19,32 +19,6 @@ val localProperties = Properties().apply {
     }
 }
 val sdkDirFromProperties = localProperties.getProperty("sdk.dir")?.let(::File)
-fun configValue(propertyName: String, envName: String): String? {
-    return providers.gradleProperty(propertyName).orNull
-        ?: localProperties.getProperty(propertyName)
-        ?: System.getenv(envName)
-}
-
-val releaseKeystorePath = configValue(
-    "android.release.keystore.path",
-    "ANDROID_RELEASE_KEYSTORE_PATH"
-)
-val releaseStorePassword = configValue(
-    "android.release.store.password",
-    "ANDROID_RELEASE_STORE_PASSWORD"
-)
-val releaseKeyAlias = configValue(
-    "android.release.key.alias",
-    "ANDROID_RELEASE_KEY_ALIAS"
-)
-val releaseKeyPassword = configValue(
-    "android.release.key.password",
-    "ANDROID_RELEASE_KEY_PASSWORD"
-)
-val hasReleaseSigning = !releaseKeystorePath.isNullOrBlank()
-        && !releaseStorePassword.isNullOrBlank()
-        && !releaseKeyAlias.isNullOrBlank()
-        && !releaseKeyPassword.isNullOrBlank()
 val resolvedNdkDir = run {
     val envNdk = System.getenv("ANDROID_NDK_HOME")?.takeIf { it.isNotBlank() }?.let(::File)
     if (envNdk?.isDirectory == true) {
@@ -73,17 +47,6 @@ android {
     namespace = "top.initsnow.edge_tts_android"
     compileSdk = 36 // 保持你要求的 36
 
-    signingConfigs {
-        create("release") {
-            if (hasReleaseSigning) {
-                storeFile = file(requireNotNull(releaseKeystorePath))
-                storePassword = requireNotNull(releaseStorePassword)
-                keyAlias = requireNotNull(releaseKeyAlias)
-                keyPassword = requireNotNull(releaseKeyPassword)
-            }
-        }
-    }
-
     defaultConfig {
         applicationId = "top.initsnow.edge_tts_android"
         minSdk = 24
@@ -103,9 +66,6 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            if (hasReleaseSigning) {
-                signingConfig = signingConfigs.getByName("release")
-            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

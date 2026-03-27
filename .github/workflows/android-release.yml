@@ -53,7 +53,24 @@ jobs:
           ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
           ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
           ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
-        run: ./gradlew assembleRelease
+        run: |
+          if [ -n "${ANDROID_RELEASE_KEYSTORE_PATH:-}" ] && \
+             [ -n "${ANDROID_RELEASE_STORE_PASSWORD:-}" ] && \
+             [ -n "${ANDROID_RELEASE_KEY_ALIAS:-}" ] && \
+             [ -n "${ANDROID_RELEASE_KEY_PASSWORD:-}" ]; then
+            ./gradlew assembleRelease \
+              -Pandroid.injected.signing.store.file="$ANDROID_RELEASE_KEYSTORE_PATH" \
+              -Pandroid.injected.signing.store.password="$ANDROID_RELEASE_STORE_PASSWORD" \
+              -Pandroid.injected.signing.key.alias="$ANDROID_RELEASE_KEY_ALIAS" \
+              -Pandroid.injected.signing.key.password="$ANDROID_RELEASE_KEY_PASSWORD"
+          else
+            ./gradlew assembleRelease
+          fi
+
+      - name: Verify signed APKs
+        if: env.ANDROID_RELEASE_KEYSTORE_PATH != ''
+        run: |
+          find app/build/outputs/apk/release -name '*.apk' -print -exec apksigner verify --print-certs {} \;
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
