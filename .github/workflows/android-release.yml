@@ -47,30 +47,30 @@ jobs:
             echo "ANDROID_RELEASE_KEYSTORE_PATH=$ANDROID_RELEASE_KEYSTORE_PATH" >> "$GITHUB_ENV"
           fi
 
-      - name: Build release APKs
+      - name: Validate signing inputs
+        env:
+          ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+        run: |
+          [ -n "${ANDROID_RELEASE_KEYSTORE_PATH:-}" ] || { echo "Missing ANDROID_RELEASE_KEYSTORE_BASE64"; exit 1; }
+          [ -n "${ANDROID_RELEASE_STORE_PASSWORD:-}" ] || { echo "Missing ANDROID_RELEASE_STORE_PASSWORD"; exit 1; }
+          [ -n "${ANDROID_RELEASE_KEY_ALIAS:-}" ] || { echo "Missing ANDROID_RELEASE_KEY_ALIAS"; exit 1; }
+          [ -n "${ANDROID_RELEASE_KEY_PASSWORD:-}" ] || { echo "Missing ANDROID_RELEASE_KEY_PASSWORD"; exit 1; }
+
+      - name: Build signed release APKs
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/30.0.14904198
           ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
           ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
           ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
         run: |
-          if [ -n "${ANDROID_RELEASE_KEYSTORE_PATH:-}" ] && \
-             [ -n "${ANDROID_RELEASE_STORE_PASSWORD:-}" ] && \
-             [ -n "${ANDROID_RELEASE_KEY_ALIAS:-}" ] && \
-             [ -n "${ANDROID_RELEASE_KEY_PASSWORD:-}" ]; then
-            ./gradlew assembleRelease \
-              -Pandroid.injected.signing.store.file="$ANDROID_RELEASE_KEYSTORE_PATH" \
-              -Pandroid.injected.signing.store.password="$ANDROID_RELEASE_STORE_PASSWORD" \
-              -Pandroid.injected.signing.key.alias="$ANDROID_RELEASE_KEY_ALIAS" \
-              -Pandroid.injected.signing.key.password="$ANDROID_RELEASE_KEY_PASSWORD"
-          else
-            ./gradlew assembleRelease
-          fi
-
-      - name: Verify signed APKs
-        if: env.ANDROID_RELEASE_KEYSTORE_PATH != ''
-        run: |
-          find app/build/outputs/apk/release -name '*.apk' -print -exec apksigner verify --print-certs {} \;
+          ./gradlew assembleRelease \
+            -Pandroid.injected.signing.store.file="$ANDROID_RELEASE_KEYSTORE_PATH" \
+            -Pandroid.injected.signing.store.password="$ANDROID_RELEASE_STORE_PASSWORD" \
+            -Pandroid.injected.signing.key.alias="$ANDROID_RELEASE_KEY_ALIAS" \
+            -Pandroid.injected.signing.key.password="$ANDROID_RELEASE_KEY_PASSWORD" \
+            -Pandroid.injected.signing.store.type=pkcs12
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
