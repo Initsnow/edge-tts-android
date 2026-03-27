@@ -25,6 +25,24 @@ Build release APKs:
 ./gradlew assembleRelease
 ```
 
+Optional release signing:
+
+- Set `android.release.keystore.path`, `android.release.store.password`, `android.release.key.alias`, `android.release.key.password`
+- Or provide the equivalent env vars:
+  `ANDROID_RELEASE_KEYSTORE_PATH`,
+  `ANDROID_RELEASE_STORE_PASSWORD`,
+  `ANDROID_RELEASE_KEY_ALIAS`,
+  `ANDROID_RELEASE_KEY_PASSWORD`
+
+GitHub Actions signing secrets:
+
+- `ANDROID_RELEASE_KEYSTORE_BASE64`
+- `ANDROID_RELEASE_STORE_PASSWORD`
+- `ANDROID_RELEASE_KEY_ALIAS`
+- `ANDROID_RELEASE_KEY_PASSWORD`
+
+If signing values are absent, `assembleRelease` still produces unsigned release APKs.
+
 Gradle builds the Rust JNI library for:
 
 - `arm64-v8a`
