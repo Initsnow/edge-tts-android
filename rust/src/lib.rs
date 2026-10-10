@@ -15,9 +15,13 @@ use futures_util::StreamExt;
 use jni::JNIEnv;
 use jni::objects::{JByteArray, JClass, JString};
 use jni::sys::{jbyteArray, jstring};
-use minimp3::{Decoder, Error as Mp3Error};
+use std::convert::TryInto;
+use minimp3::{Decoder as Mp3Decoder, Error as Mp3Error};
 use once_cell::sync::Lazy;
+use opus_decoder::OpusDecoder;
 use tokio::runtime::{Builder, Runtime};
+use webm_iterable::WebmIterator;
+use webm_iterable::matroska_spec::{Block, MatroskaSpec, SimpleBlock};
 
 type SessionMap = HashMap<String, Arc<SynthesisSession>>;
 
@@ -34,6 +38,12 @@ static EDGE_TTS_CLIENT: Lazy<Result<EdgeTtsClient, String>> =
 #[cfg(target_os = "android")]
 const ANDROID_LOG_INFO: i32 = 4;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AudioCodec {
+    WebmOpus,
+    Mp3,
+}
+
 struct ChunkBuffer {
     chunks: VecDeque<Vec<u8>>,
     front_offset: usize,
@@ -45,14 +55,14 @@ struct PcmState {
     error: Option<String>,
 }
 
-struct Mp3State {
+struct AudioState {
     data: ChunkBuffer,
     closed: bool,
     error: Option<String>,
 }
 
-struct Mp3Buffer {
-    state: Mutex<Mp3State>,
+struct AudioBuffer {
+    state: Mutex<AudioState>,
     condvar: Condvar,
 }
 
@@ -62,8 +72,8 @@ struct SynthesisSession {
     stopped: Arc<AtomicBool>,
 }
 
-struct BlockingMp3Reader {
-    buffer: Arc<Mp3Buffer>,
+struct BlockingAudioReader {
+    buffer: Arc<AudioBuffer>,
     stopped: Arc<AtomicBool>,
 }
 
@@ -123,10 +133,10 @@ impl ChunkBuffer {
     }
 }
 
-impl Mp3Buffer {
+impl AudioBuffer {
     fn new() -> Self {
         Self {
-            state: Mutex::new(Mp3State {
+            state: Mutex::new(AudioState {
                 data: ChunkBuffer::new(),
                 closed: false,
                 error: None,
@@ -136,28 +146,55 @@ impl Mp3Buffer {
     }
 
     fn push(&self, bytes: &[u8]) {
-        let mut state = self.state.lock().expect("mp3 state poisoned");
+        let mut state = self.state.lock().expect("audio state poisoned");
         state.data.push_copy(bytes);
         self.condvar.notify_all();
     }
 
     fn close(&self) {
-        let mut state = self.state.lock().expect("mp3 state poisoned");
+        let mut state = self.state.lock().expect("audio state poisoned");
         state.closed = true;
         self.condvar.notify_all();
     }
 
     fn fail(&self, error: String) {
-        let mut state = self.state.lock().expect("mp3 state poisoned");
+        let mut state = self.state.lock().expect("audio state poisoned");
         state.error = Some(error);
         state.closed = true;
         self.condvar.notify_all();
     }
+
+    fn peek_format(&self, stopped: &AtomicBool) -> Result<AudioCodec, String> {
+        let mut state = self.state.lock().expect("audio state poisoned");
+        loop {
+            if stopped.load(Ordering::SeqCst) {
+                return Ok(AudioCodec::WebmOpus);
+            }
+            if let Some(error) = state.error.clone() {
+                return Err(error);
+            }
+            if let Some(chunk) = state.data.chunks.front() {
+                let available = chunk.len().saturating_sub(state.data.front_offset);
+                if available >= 4 {
+                    let offset = state.data.front_offset;
+                    if &chunk[offset..offset + 4] == &[0x1A, 0x45, 0xDF, 0xA3] {
+                        return Ok(AudioCodec::WebmOpus);
+                    } else {
+                        return Ok(AudioCodec::Mp3);
+                    }
+                }
+            }
+            if state.closed {
+                return Ok(AudioCodec::WebmOpus);
+            }
+            state = self.condvar.wait(state).expect("audio condvar poisoned");
+        }
+    }
 }
 
-impl Read for BlockingMp3Reader {
+impl Read for BlockingAudioReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let mut state = self.buffer.state.lock().expect("mp3 state poisoned");
+        let mut state = self.buffer.state.lock().expect("audio state poisoned");
         loop {
             if self.stopped.load(Ordering::SeqCst) {
                 return Ok(0);
@@ -176,7 +213,7 @@ impl Read for BlockingMp3Reader {
                 .buffer
                 .condvar
                 .wait(state)
-                .expect("mp3 condvar poisoned");
+                .expect("audio condvar poisoned");
         }
     }
 }
@@ -301,6 +338,30 @@ fn default_intonation_intensity() -> f64 { 1.0 }
 fn default_min_source_pitch() -> f64 { 33.125 }
 fn default_max_source_pitch() -> f64 { 80.875 }
 
+fn for_each_webm_frame(
+    spec: &MatroskaSpec,
+    mut on_frame: impl FnMut(&[u8]) -> Result<(), String>,
+) -> Result<(), String> {
+    match spec {
+        MatroskaSpec::SimpleBlock(_) => {
+            let sb: SimpleBlock = spec.try_into().map_err(|e| format!("SimpleBlock parse error: {e:?}"))?;
+            let frames = sb.read_frame_data().map_err(|e| format!("read_frame_data error: {e:?}"))?;
+            for frame in frames {
+                on_frame(frame.data)?;
+            }
+        }
+        MatroskaSpec::Block(_) => {
+            let b: Block = spec.try_into().map_err(|e| format!("Block parse error: {e:?}"))?;
+            let frames = b.read_frame_data().map_err(|e| format!("read_frame_data error: {e:?}"))?;
+            for frame in frames {
+                on_frame(frame.data)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn spawn_synthesis_worker(
     request_id: String,
     session: Arc<SynthesisSession>,
@@ -317,19 +378,28 @@ fn spawn_synthesis_worker(
             "request={request_id} native worker started textChars={}",
             text.chars().count()
         ));
-        let mp3_buffer = Arc::new(Mp3Buffer::new());
+        let audio_buffer = Arc::new(AudioBuffer::new());
         let decoder_session = Arc::clone(&session);
-        let decoder_buffer = Arc::clone(&mp3_buffer);
+        let decoder_buffer = Arc::clone(&audio_buffer);
         let decoder_stop = Arc::clone(&session.stopped);
         let decoder_request_id = request_id.clone();
         let decoder_start = request_start;
         let beatrice_config_clone = beatrice_config.clone();
 
         let decoder_handle = thread::spawn(move || {
-            let mut decoder = Decoder::new(BlockingMp3Reader {
+            let codec = match decoder_buffer.peek_format(&decoder_stop) {
+                Ok(c) => c,
+                Err(error) => {
+                    decoder_session.fail(error);
+                    return;
+                }
+            };
+
+            let reader = BlockingAudioReader {
                 buffer: decoder_buffer,
-                stopped: decoder_stop,
-            });
+                stopped: Arc::clone(&decoder_stop),
+            };
+
             let mut first_pcm_logged = false;
 
             if let Some(config) = beatrice_config_clone.filter(|c| c.enabled) {
@@ -363,117 +433,223 @@ fn spawn_synthesis_worker(
                 let mut sample_buffer = VecDeque::new();
                 const HOP_SIZE: usize = 240; // 240 samples @ 24kHz = 10ms
 
-                loop {
-                    if decoder_session.stopped.load(Ordering::SeqCst) {
-                        decoder_session.finish();
-                        break;
+                let mut process_samples = |samples: &[f32]| -> Result<(), String> {
+                    for &sample in samples {
+                        sample_buffer.push_back(sample);
                     }
-                    match decoder.next_frame() {
-                        Ok(frame) => {
-                            if frame.channels == 2 {
-                                for pair in frame.data.chunks_exact(2) {
-                                    let mono = ((pair[0] as f32 + pair[1] as f32) * 0.5) / 32768.0;
-                                    sample_buffer.push_back(mono);
+                    while sample_buffer.len() >= HOP_SIZE {
+                        let mut hop = [0.0f32; HOP_SIZE];
+                        for item in hop.iter_mut() {
+                            *item = sample_buffer.pop_front().unwrap();
+                        }
+                        match beatrice_inst.infer(&hop) {
+                            Ok(out_samples) => {
+                                let mut pcm_bytes = Vec::with_capacity(out_samples.len() * 2);
+                                for sample in out_samples {
+                                    let clamped = (sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
+                                    pcm_bytes.extend_from_slice(&clamped.to_le_bytes());
                                 }
-                            } else {
-                                for sample in frame.data {
-                                    sample_buffer.push_back((sample as f32) / 32768.0);
+                                if !first_pcm_logged {
+                                    first_pcm_logged = true;
+                                    log_latency(&format!(
+                                        "request={decoder_request_id} first Beatrice PCM frame in {}ms samples={}",
+                                        decoder_start.elapsed().as_millis(),
+                                        pcm_bytes.len() / 2
+                                    ));
                                 }
+                                decoder_session.push_pcm(&pcm_bytes);
                             }
+                            Err(error) => {
+                                return Err(format!("Beatrice inference error: {error}"));
+                            }
+                        }
+                    }
+                    Ok(())
+                };
 
-                            while sample_buffer.len() >= HOP_SIZE {
-                                let mut hop = [0.0f32; HOP_SIZE];
-                                for item in hop.iter_mut() {
-                                    *item = sample_buffer.pop_front().unwrap();
-                                }
-                                match beatrice_inst.infer(&hop) {
-                                    Ok(out_samples) => {
-                                        let mut pcm_bytes = Vec::with_capacity(out_samples.len() * 2);
-                                        for sample in out_samples {
-                                            let clamped = (sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
-                                            pcm_bytes.extend_from_slice(&clamped.to_le_bytes());
+                match codec {
+                    AudioCodec::WebmOpus => {
+                        let mut opus_dec = match OpusDecoder::new(24000, 1) {
+                            Ok(dec) => dec,
+                            Err(error) => {
+                                decoder_session.fail(format!("Opus decoder init error: {error}"));
+                                return;
+                            }
+                        };
+                        let mut float_buf = vec![0.0f32; 5760];
+                        let iter = WebmIterator::new(reader, &[]);
+                        for tag in iter {
+                            if decoder_stop.load(Ordering::SeqCst) {
+                                break;
+                            }
+                            match tag {
+                                Ok(ref spec) => {
+                                    let res = for_each_webm_frame(spec, |frame_data| {
+                                        match opus_dec.decode_float(frame_data, &mut float_buf, false) {
+                                            Ok(samples_decoded) => {
+                                                process_samples(&float_buf[..samples_decoded])
+                                            }
+                                            Err(err) => Err(format!("Opus decode error: {err}")),
                                         }
-                                        if !first_pcm_logged {
-                                            first_pcm_logged = true;
-                                            log_latency(&format!(
-                                                "request={decoder_request_id} first Beatrice PCM frame in {}ms samples={}",
-                                                decoder_start.elapsed().as_millis(),
-                                                pcm_bytes.len() / 2
-                                            ));
-                                        }
-                                        decoder_session.push_pcm(&pcm_bytes);
-                                    }
-                                    Err(error) => {
-                                        decoder_session.fail(format!("Beatrice inference error: {error}"));
+                                    });
+                                    if let Err(err) = res {
+                                        decoder_session.fail(err);
                                         return;
                                     }
                                 }
-                            }
-                        }
-                        Err(Mp3Error::Eof) => {
-                            if !sample_buffer.is_empty() {
-                                let mut hop = [0.0f32; HOP_SIZE];
-                                let mut idx = 0;
-                                while let Some(s) = sample_buffer.pop_front() {
-                                    if idx < HOP_SIZE {
-                                        hop[idx] = s;
-                                        idx += 1;
+                                Err(e) => {
+                                    if !decoder_stop.load(Ordering::SeqCst) {
+                                        decoder_session.fail(format!("WebM parse error: {e:?}"));
                                     }
-                                }
-                                if let Ok(out_samples) = beatrice_inst.infer(&hop) {
-                                    let mut pcm_bytes = Vec::with_capacity(out_samples.len() * 2);
-                                    for sample in out_samples {
-                                        let clamped = (sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
-                                        pcm_bytes.extend_from_slice(&clamped.to_le_bytes());
-                                    }
-                                    decoder_session.push_pcm(&pcm_bytes);
+                                    break;
                                 }
                             }
-                            decoder_session.finish();
-                            break;
                         }
-                        Err(error) => {
-                            decoder_session.fail(format!("mp3 decode error: {error}"));
-                            break;
+                    }
+                    AudioCodec::Mp3 => {
+                        let mut mp3_decoder = Mp3Decoder::new(reader);
+                        loop {
+                            if decoder_stop.load(Ordering::SeqCst) {
+                                break;
+                            }
+                            match mp3_decoder.next_frame() {
+                                Ok(frame) => {
+                                    let float_samples: Vec<f32> = if frame.channels == 2 {
+                                        frame.data.chunks_exact(2)
+                                            .map(|pair| ((pair[0] as f32 + pair[1] as f32) * 0.5) / 32768.0)
+                                            .collect()
+                                    } else {
+                                        frame.data.into_iter()
+                                            .map(|s| (s as f32) / 32768.0)
+                                            .collect()
+                                    };
+                                    if let Err(err) = process_samples(&float_samples) {
+                                        decoder_session.fail(err);
+                                        return;
+                                    }
+                                }
+                                Err(Mp3Error::Eof) => break,
+                                Err(error) => {
+                                    decoder_session.fail(format!("mp3 decode error: {error}"));
+                                    return;
+                                }
+                            }
                         }
                     }
                 }
-            } else {
-                loop {
-                    if decoder_session.stopped.load(Ordering::SeqCst) {
-                        decoder_session.finish();
-                        break;
+
+                if !sample_buffer.is_empty() && !decoder_stop.load(Ordering::SeqCst) {
+                    let mut hop = [0.0f32; HOP_SIZE];
+                    let mut idx = 0;
+                    while let Some(s) = sample_buffer.pop_front() {
+                        if idx < HOP_SIZE {
+                            hop[idx] = s;
+                            idx += 1;
+                        }
                     }
-                    match decoder.next_frame() {
-                        Ok(frame) => {
-                            let mut pcm_bytes = Vec::with_capacity(frame.data.len() * 2);
-                            if frame.channels == 2 {
-                                for pair in frame.data.chunks_exact(2) {
-                                    let mono = (((pair[0] as i32 + pair[1] as i32) / 2) as i16).to_le_bytes();
-                                    pcm_bytes.extend_from_slice(&mono);
+                    if let Ok(out_samples) = beatrice_inst.infer(&hop) {
+                        let mut pcm_bytes = Vec::with_capacity(out_samples.len() * 2);
+                        for sample in out_samples {
+                            let clamped = (sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
+                            pcm_bytes.extend_from_slice(&clamped.to_le_bytes());
+                        }
+                        decoder_session.push_pcm(&pcm_bytes);
+                    }
+                }
+                decoder_session.finish();
+            } else {
+                match codec {
+                    AudioCodec::WebmOpus => {
+                        let mut opus_dec = match OpusDecoder::new(24000, 1) {
+                            Ok(dec) => dec,
+                            Err(error) => {
+                                decoder_session.fail(format!("Opus decoder init error: {error}"));
+                                return;
+                            }
+                        };
+                        let mut pcm_buf = vec![0i16; 5760];
+                        let iter = WebmIterator::new(reader, &[]);
+                        for tag in iter {
+                            if decoder_stop.load(Ordering::SeqCst) {
+                                break;
+                            }
+                            match tag {
+                                Ok(ref spec) => {
+                                    let res = for_each_webm_frame(spec, |frame_data| {
+                                        match opus_dec.decode(frame_data, &mut pcm_buf, false) {
+                                            Ok(samples_decoded) => {
+                                                let mut pcm_bytes = Vec::with_capacity(samples_decoded * 2);
+                                                for sample in &pcm_buf[..samples_decoded] {
+                                                    pcm_bytes.extend_from_slice(&sample.to_le_bytes());
+                                                }
+                                                if !first_pcm_logged {
+                                                    first_pcm_logged = true;
+                                                    log_latency(&format!(
+                                                        "request={decoder_request_id} first Opus PCM frame in {}ms samples={}",
+                                                        decoder_start.elapsed().as_millis(),
+                                                        pcm_bytes.len() / 2
+                                                    ));
+                                                }
+                                                decoder_session.push_pcm(&pcm_bytes);
+                                                Ok(())
+                                            }
+                                            Err(err) => Err(format!("Opus decode error: {err}")),
+                                        }
+                                    });
+                                    if let Err(err) = res {
+                                        decoder_session.fail(err);
+                                        return;
+                                    }
                                 }
-                            } else {
-                                for sample in frame.data {
-                                    pcm_bytes.extend_from_slice(&sample.to_le_bytes());
+                                Err(e) => {
+                                    if !decoder_stop.load(Ordering::SeqCst) {
+                                        decoder_session.fail(format!("WebM parse error: {e:?}"));
+                                    }
+                                    break;
                                 }
                             }
-                            if !first_pcm_logged {
-                                first_pcm_logged = true;
-                                log_latency(&format!(
-                                    "request={decoder_request_id} first PCM frame in {}ms samples={}",
-                                    decoder_start.elapsed().as_millis(),
-                                    pcm_bytes.len() / 2
-                                ));
+                        }
+                        decoder_session.finish();
+                    }
+                    AudioCodec::Mp3 => {
+                        let mut mp3_decoder = Mp3Decoder::new(reader);
+                        loop {
+                            if decoder_stop.load(Ordering::SeqCst) {
+                                decoder_session.finish();
+                                break;
                             }
-                            decoder_session.push_pcm(&pcm_bytes);
-                        }
-                        Err(Mp3Error::Eof) => {
-                            decoder_session.finish();
-                            break;
-                        }
-                        Err(error) => {
-                            decoder_session.fail(format!("mp3 decode error: {error}"));
-                            break;
+                            match mp3_decoder.next_frame() {
+                                Ok(frame) => {
+                                    let mut pcm_bytes = Vec::with_capacity(frame.data.len() * 2);
+                                    if frame.channels == 2 {
+                                        for pair in frame.data.chunks_exact(2) {
+                                            let mono = (((pair[0] as i32 + pair[1] as i32) / 2) as i16).to_le_bytes();
+                                            pcm_bytes.extend_from_slice(&mono);
+                                        }
+                                    } else {
+                                        for sample in frame.data {
+                                            pcm_bytes.extend_from_slice(&sample.to_le_bytes());
+                                        }
+                                    }
+                                    if !first_pcm_logged {
+                                        first_pcm_logged = true;
+                                        log_latency(&format!(
+                                            "request={decoder_request_id} first PCM frame in {}ms samples={}",
+                                            decoder_start.elapsed().as_millis(),
+                                            pcm_bytes.len() / 2
+                                        ));
+                                    }
+                                    decoder_session.push_pcm(&pcm_bytes);
+                                }
+                                Err(Mp3Error::Eof) => {
+                                    decoder_session.finish();
+                                    break;
+                                }
+                                Err(error) => {
+                                    decoder_session.fail(format!("mp3 decode error: {error}"));
+                                    break;
+                                }
+                            }
                         }
                     }
                 }
@@ -481,7 +657,7 @@ fn spawn_synthesis_worker(
         });
 
         let network_session = Arc::clone(&session);
-        let network_buffer = Arc::clone(&mp3_buffer);
+        let network_buffer = Arc::clone(&audio_buffer);
         let network_request_id = request_id.clone();
         let network_result = TOKIO_RUNTIME.block_on(async move {
             let client = shared_client()?;
@@ -509,7 +685,7 @@ fn spawn_synthesis_worker(
                         if !first_audio_logged {
                             first_audio_logged = true;
                             log_latency(&format!(
-                                "request={network_request_id} first MP3 chunk in {}ms bytes={}",
+                                "request={network_request_id} first audio chunk in {}ms bytes={}",
                                 request_start.elapsed().as_millis(),
                                 chunk.len()
                             ));
@@ -524,10 +700,10 @@ fn spawn_synthesis_worker(
         });
 
         if let Err(error) = network_result {
-            mp3_buffer.fail(error.clone());
+            audio_buffer.fail(error.clone());
             session.fail(error);
         } else {
-            mp3_buffer.close();
+            audio_buffer.close();
         }
 
         let _ = decoder_handle.join();
@@ -852,10 +1028,36 @@ mod tests {
     fn test_beatrice_resampler() {
         let mut resampler = beatrice::BeatriceResampler::new(24000.0, 24000.0, 1, 1);
         let input = vec![0.0f32; 240];
-        for i in 0..5 {
-            let beatrice_in = resampler.convert_to_beatrice_input(&input);
-            println!("chunk {i}: beatrice_in.len() = {}", beatrice_in.len());
+        for _i in 0..5 {
+            let _beatrice_in = resampler.convert_to_beatrice_input(&input);
         }
+    }
+
+    #[test]
+    fn test_synthesis_session_pcm() {
+        let request_id = "test-req-1".to_string();
+        let session = Arc::new(SynthesisSession::new());
+        insert_session(request_id.clone(), Arc::clone(&session)).expect("insert");
+
+        spawn_synthesis_worker(
+            request_id.clone(),
+            Arc::clone(&session),
+            "Hello test".to_string(),
+            "en-US-EmmaMultilingualNeural".to_string(),
+            "+0%".to_string(),
+            "+0%".to_string(),
+            "+0Hz".to_string(),
+            None,
+        );
+
+        let mut total_bytes = 0;
+        while let Some(chunk) = session.read_pcm(4096) {
+            total_bytes += chunk.len();
+        }
+        remove_session(&request_id);
+
+        assert!(total_bytes > 0, "Expected PCM bytes to be synthesized and decoded");
+        assert!(session.last_error().is_none(), "Expected no error, got: {:?}", session.last_error());
     }
 }
 

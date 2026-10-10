@@ -8,11 +8,13 @@ name = "edge_tts_android"
 crate-type = ["cdylib"]
 
 [dependencies]
-edge-tts-rust = { git = "https://github.com/Initsnow/edge-tts-rust", rev = "be365ba476ad2856cc3e6c8035b6fe8f297615e0" }
+edge-tts-rust = { git = "https://github.com/Initsnow/edge-tts-rust", rev = "74d8e07f538165f827b5f1a9b4094e380d6f2879" }
 futures-util = "0.3"
 jni = "0.21"
 minimp3 = "0.5"
 once_cell = "1.21"
+opus-decoder = "0.1"
+webm-iterable = "0.7"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.45", features = ["io-util", "net", "rt-multi-thread", "sync", "time"] }
