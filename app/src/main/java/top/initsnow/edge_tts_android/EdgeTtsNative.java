@@ -8,6 +8,10 @@ public final class EdgeTtsNative {
         boolean ready = false;
         String error = "";
         try {
+            try {
+                System.loadLibrary("c++_shared");
+            } catch (UnsatisfiedLinkError ignored) {
+            }
             System.loadLibrary("edge_tts_android");
             ready = true;
         } catch (UnsatisfiedLinkError exception) {
@@ -43,6 +47,29 @@ public final class EdgeTtsNative {
         return nativeBeginSynthesis(requestId, text, voice, rate, volume, pitch);
     }
 
+    public static String beginSynthesisWithBeatrice(
+            String requestId,
+            String text,
+            String voice,
+            String rate,
+            String volume,
+            String pitch,
+            String beatriceConfigJson
+    ) {
+        return nativeBeginSynthesisWithBeatrice(requestId, text, voice, rate, volume, pitch, beatriceConfigJson);
+    }
+
+    public static String getBeatriceModelInfo(String modelPath) {
+        return nativeGetBeatriceModelInfo(modelPath);
+    }
+
+    public static boolean isBeatriceSupported() {
+        if (!READY) {
+            return false;
+        }
+        return nativeIsBeatriceSupported();
+    }
+
     public static byte[] readPcmChunk(String requestId, int maxBytes) {
         return nativeReadPcmChunk(requestId, maxBytes);
     }
@@ -65,6 +92,20 @@ public final class EdgeTtsNative {
             String volume,
             String pitch
     );
+
+    private static native String nativeBeginSynthesisWithBeatrice(
+            String requestId,
+            String text,
+            String voice,
+            String rate,
+            String volume,
+            String pitch,
+            String beatriceConfigJson
+    );
+
+    private static native String nativeGetBeatriceModelInfo(String modelPath);
+
+    private static native boolean nativeIsBeatriceSupported();
 
     private static native byte[] nativeReadPcmChunk(String requestId, int maxBytes);
 

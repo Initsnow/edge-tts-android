@@ -33,5 +33,18 @@
     <string name="engine_check_passed">Voice data check passed.</string>
     <string name="voice_section_title">Voice selection</string>
     <string name="engine_section_title">Engine defaults</string>
+    <string name="beatrice_section_title">Beatrice Voice Changer</string>
+    <string name="beatrice_switch_label">Enable Beatrice voice conversion</string>
+    <string name="beatrice_model_path_label">Model folder path</string>
+    <string name="beatrice_model_path_helper">Folder containing beatrice.toml and .bin weights</string>
+    <string name="beatrice_choose_model_folder">Choose model folder</string>
+    <string name="beatrice_speaker_label">Target speaker</string>
+    <string name="beatrice_pitch_shift_label">Pitch shift (semitones)</string>
+    <string name="beatrice_pitch_shift_helper">Examples: 0.0, +12.0, -12.0</string>
+    <string name="beatrice_formant_shift_label">Formant shift</string>
+    <string name="beatrice_formant_shift_helper">Examples: 0.0, +0.5, -0.5</string>
+    <string name="beatrice_not_supported">Beatrice is not supported on this 32-bit architecture.</string>
+    <string name="beatrice_model_loaded">Model: %1$s (%2$s)</string>
+    <string name="beatrice_model_invalid">Invalid Beatrice model folder</string>
     <string name="preview_section_title">Preview</string>
 </resources>

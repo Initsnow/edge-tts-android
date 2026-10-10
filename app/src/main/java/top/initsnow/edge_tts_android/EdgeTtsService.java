@@ -152,18 +152,30 @@ public final class EdgeTtsService extends TextToSpeechService {
             String rate = mapPercentage(request.getSpeechRate(), settings().getDefaultRate());
             String pitch = mapPitch(request.getPitch(), settings().getDefaultPitch());
             String volume = settings().getDefaultVolume();
+            String beatriceConfigJson = settings().buildBeatriceConfigJson();
             logLatency("request=" + requestId
                     + " onSynthesizeText textChars=" + text.length()
-                    + " voice=" + selectedVoice);
+                    + " voice=" + selectedVoice
+                    + " beatriceEnabled=" + (beatriceConfigJson != null));
 
-            String error = EdgeTtsNative.beginSynthesis(
-                    requestId,
-                    text,
-                    selectedVoice,
-                    rate,
-                    volume,
-                    pitch
-            );
+            String error = beatriceConfigJson != null
+                    ? EdgeTtsNative.beginSynthesisWithBeatrice(
+                            requestId,
+                            text,
+                            selectedVoice,
+                            rate,
+                            volume,
+                            pitch,
+                            beatriceConfigJson
+                    )
+                    : EdgeTtsNative.beginSynthesis(
+                            requestId,
+                            text,
+                            selectedVoice,
+                            rate,
+                            volume,
+                            pitch
+                    );
             if (error != null && !error.isEmpty()) {
                 callback.error(TextToSpeech.ERROR_NETWORK);
                 return;

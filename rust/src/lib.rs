@@ -1,3 +1,5 @@
+pub mod beatrice;
+
 use std::collections::{HashMap, VecDeque};
 #[cfg(target_os = "android")]
 use std::ffi::CString;
@@ -266,6 +268,39 @@ fn shared_client() -> Result<&'static EdgeTtsClient, String> {
     EDGE_TTS_CLIENT.as_ref().map_err(Clone::clone)
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct BeatriceConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub model_path: String,
+    #[serde(default)]
+    pub speaker_id: u32,
+    #[serde(default)]
+    pub pitch_shift: f64,
+    #[serde(default)]
+    pub formant_shift: f64,
+    #[serde(default = "default_average_source_pitch")]
+    pub average_source_pitch: f64,
+    #[serde(default = "default_intonation_intensity")]
+    pub intonation_intensity: f64,
+    #[serde(default)]
+    pub pitch_correction: f64,
+    #[serde(default)]
+    pub pitch_correction_type: i32,
+    #[serde(default = "default_min_source_pitch")]
+    pub min_source_pitch: f64,
+    #[serde(default = "default_max_source_pitch")]
+    pub max_source_pitch: f64,
+    #[serde(default)]
+    pub vq_num_neighbors: i32,
+}
+
+fn default_average_source_pitch() -> f64 { 52.0 }
+fn default_intonation_intensity() -> f64 { 1.0 }
+fn default_min_source_pitch() -> f64 { 33.125 }
+fn default_max_source_pitch() -> f64 { 80.875 }
+
 fn spawn_synthesis_worker(
     request_id: String,
     session: Arc<SynthesisSession>,
@@ -274,6 +309,7 @@ fn spawn_synthesis_worker(
     rate: String,
     volume: String,
     pitch: String,
+    beatrice_config: Option<BeatriceConfig>,
 ) {
     thread::spawn(move || {
         let request_start = Instant::now();
@@ -287,6 +323,7 @@ fn spawn_synthesis_worker(
         let decoder_stop = Arc::clone(&session.stopped);
         let decoder_request_id = request_id.clone();
         let decoder_start = request_start;
+        let beatrice_config_clone = beatrice_config.clone();
 
         let decoder_handle = thread::spawn(move || {
             let mut decoder = Decoder::new(BlockingMp3Reader {
@@ -295,34 +332,149 @@ fn spawn_synthesis_worker(
             });
             let mut first_pcm_logged = false;
 
-            loop {
-                if decoder_session.stopped.load(Ordering::SeqCst) {
-                    decoder_session.finish();
-                    break;
-                }
-                match decoder.next_frame() {
-                    Ok(frame) => {
-                        let mut pcm_bytes = Vec::with_capacity(frame.data.len() * 2);
-                        for sample in frame.data {
-                            pcm_bytes.extend_from_slice(&sample.to_le_bytes());
-                        }
-                        if !first_pcm_logged {
-                            first_pcm_logged = true;
-                            log_latency(&format!(
-                                "request={decoder_request_id} first PCM frame in {}ms samples={}",
-                                decoder_start.elapsed().as_millis(),
-                                pcm_bytes.len() / 2
-                            ));
-                        }
-                        decoder_session.push_pcm(&pcm_bytes);
+            if let Some(config) = beatrice_config_clone.filter(|c| c.enabled) {
+                let beatrice_load_start = Instant::now();
+                let mut beatrice_inst = match beatrice::new(&config.model_path, 24000.0, 24000.0, 1, 1) {
+                    Ok(b) => b,
+                    Err(error) => {
+                        decoder_session.fail(format!("Beatrice model load failed: {error}"));
+                        return;
                     }
-                    Err(Mp3Error::Eof) => {
+                };
+                log_latency(&format!(
+                    "request={decoder_request_id} Beatrice model loaded in {}ms",
+                    beatrice_load_start.elapsed().as_millis()
+                ));
+
+                if let Err(error) = beatrice_inst.set_target_speaker(config.speaker_id) {
+                    decoder_session.fail(format!("Beatrice set target speaker failed: {error}"));
+                    return;
+                }
+                beatrice_inst.set_pitch_shift(config.pitch_shift);
+                beatrice_inst.set_formant_shift(config.formant_shift);
+                beatrice_inst.set_average_source_pitch(config.average_source_pitch);
+                beatrice_inst.set_intonation_intensity(config.intonation_intensity);
+                beatrice_inst.set_pitch_correction(config.pitch_correction);
+                beatrice_inst.set_pitch_correction_type(config.pitch_correction_type);
+                beatrice_inst.set_min_source_pitch(config.min_source_pitch);
+                beatrice_inst.set_max_source_pitch(config.max_source_pitch);
+                beatrice_inst.set_vq_num_neighbors(config.vq_num_neighbors);
+
+                let mut sample_buffer = VecDeque::new();
+                const HOP_SIZE: usize = 240; // 240 samples @ 24kHz = 10ms
+
+                loop {
+                    if decoder_session.stopped.load(Ordering::SeqCst) {
                         decoder_session.finish();
                         break;
                     }
-                    Err(error) => {
-                        decoder_session.fail(format!("mp3 decode error: {error}"));
+                    match decoder.next_frame() {
+                        Ok(frame) => {
+                            if frame.channels == 2 {
+                                for pair in frame.data.chunks_exact(2) {
+                                    let mono = ((pair[0] as f32 + pair[1] as f32) * 0.5) / 32768.0;
+                                    sample_buffer.push_back(mono);
+                                }
+                            } else {
+                                for sample in frame.data {
+                                    sample_buffer.push_back((sample as f32) / 32768.0);
+                                }
+                            }
+
+                            while sample_buffer.len() >= HOP_SIZE {
+                                let mut hop = [0.0f32; HOP_SIZE];
+                                for item in hop.iter_mut() {
+                                    *item = sample_buffer.pop_front().unwrap();
+                                }
+                                match beatrice_inst.infer(&hop) {
+                                    Ok(out_samples) => {
+                                        let mut pcm_bytes = Vec::with_capacity(out_samples.len() * 2);
+                                        for sample in out_samples {
+                                            let clamped = (sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
+                                            pcm_bytes.extend_from_slice(&clamped.to_le_bytes());
+                                        }
+                                        if !first_pcm_logged {
+                                            first_pcm_logged = true;
+                                            log_latency(&format!(
+                                                "request={decoder_request_id} first Beatrice PCM frame in {}ms samples={}",
+                                                decoder_start.elapsed().as_millis(),
+                                                pcm_bytes.len() / 2
+                                            ));
+                                        }
+                                        decoder_session.push_pcm(&pcm_bytes);
+                                    }
+                                    Err(error) => {
+                                        decoder_session.fail(format!("Beatrice inference error: {error}"));
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                        Err(Mp3Error::Eof) => {
+                            if !sample_buffer.is_empty() {
+                                let mut hop = [0.0f32; HOP_SIZE];
+                                let mut idx = 0;
+                                while let Some(s) = sample_buffer.pop_front() {
+                                    if idx < HOP_SIZE {
+                                        hop[idx] = s;
+                                        idx += 1;
+                                    }
+                                }
+                                if let Ok(out_samples) = beatrice_inst.infer(&hop) {
+                                    let mut pcm_bytes = Vec::with_capacity(out_samples.len() * 2);
+                                    for sample in out_samples {
+                                        let clamped = (sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
+                                        pcm_bytes.extend_from_slice(&clamped.to_le_bytes());
+                                    }
+                                    decoder_session.push_pcm(&pcm_bytes);
+                                }
+                            }
+                            decoder_session.finish();
+                            break;
+                        }
+                        Err(error) => {
+                            decoder_session.fail(format!("mp3 decode error: {error}"));
+                            break;
+                        }
+                    }
+                }
+            } else {
+                loop {
+                    if decoder_session.stopped.load(Ordering::SeqCst) {
+                        decoder_session.finish();
                         break;
+                    }
+                    match decoder.next_frame() {
+                        Ok(frame) => {
+                            let mut pcm_bytes = Vec::with_capacity(frame.data.len() * 2);
+                            if frame.channels == 2 {
+                                for pair in frame.data.chunks_exact(2) {
+                                    let mono = (((pair[0] as i32 + pair[1] as i32) / 2) as i16).to_le_bytes();
+                                    pcm_bytes.extend_from_slice(&mono);
+                                }
+                            } else {
+                                for sample in frame.data {
+                                    pcm_bytes.extend_from_slice(&sample.to_le_bytes());
+                                }
+                            }
+                            if !first_pcm_logged {
+                                first_pcm_logged = true;
+                                log_latency(&format!(
+                                    "request={decoder_request_id} first PCM frame in {}ms samples={}",
+                                    decoder_start.elapsed().as_millis(),
+                                    pcm_bytes.len() / 2
+                                ));
+                            }
+                            decoder_session.push_pcm(&pcm_bytes);
+                        }
+                        Err(Mp3Error::Eof) => {
+                            decoder_session.finish();
+                            break;
+                        }
+                        Err(error) => {
+                            decoder_session.fail(format!("mp3 decode error: {error}"));
+                            break;
+                        }
                     }
                 }
             }
@@ -471,11 +623,134 @@ pub extern "system" fn Java_top_initsnow_edge_1tts_1android_EdgeTtsNative_native
 
         let session = Arc::new(SynthesisSession::new());
         insert_session(request_id.clone(), Arc::clone(&session))?;
-        spawn_synthesis_worker(request_id, session, text, voice, rate, volume, pitch);
+        spawn_synthesis_worker(request_id, session, text, voice, rate, volume, pitch, None);
         Ok(())
     })();
 
     into_java_string(&mut env, result.err())
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_top_initsnow_edge_1tts_1android_EdgeTtsNative_nativeBeginSynthesisWithBeatrice(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    request_id: JString<'_>,
+    text: JString<'_>,
+    voice: JString<'_>,
+    rate: JString<'_>,
+    volume: JString<'_>,
+    pitch: JString<'_>,
+    beatrice_config_json: JString<'_>,
+) -> jstring {
+    let result = (|| -> Result<(), String> {
+        let request_id = read_java_string(&mut env, request_id)?;
+        let text = read_java_string(&mut env, text)?;
+        let voice = read_java_string(&mut env, voice)?;
+        let rate = read_java_string(&mut env, rate)?;
+        let volume = read_java_string(&mut env, volume)?;
+        let pitch = read_java_string(&mut env, pitch)?;
+        let beatrice_config = if !beatrice_config_json.is_null() {
+            match read_java_string(&mut env, beatrice_config_json) {
+                Ok(json) if !json.trim().is_empty() => {
+                    serde_json::from_str::<BeatriceConfig>(&json)
+                        .map_err(|e| format!("Invalid beatrice config json: {e}"))?
+                        .into()
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        let session = Arc::new(SynthesisSession::new());
+        insert_session(request_id.clone(), Arc::clone(&session))?;
+        spawn_synthesis_worker(request_id, session, text, voice, rate, volume, pitch, beatrice_config);
+        Ok(())
+    })();
+
+    into_java_string(&mut env, result.err())
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_top_initsnow_edge_1tts_1android_EdgeTtsNative_nativeGetBeatriceModelInfo(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    model_path: JString<'_>,
+) -> jstring {
+    let model_path = match read_java_string(&mut env, model_path) {
+        Ok(v) => v,
+        Err(err) => return into_java_string(&mut env, Some(format!("ERROR: {err}"))),
+    };
+    let path = std::path::Path::new(&model_path);
+    if !path.is_dir() {
+        return into_java_string(&mut env, Some("ERROR: Model path is not a directory".to_string()));
+    }
+    let mut toml_path = None;
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_file() && p.extension().map(|e| e == "toml").unwrap_or(false) {
+                toml_path = Some(p);
+                break;
+            }
+        }
+    }
+    let Some(toml_path) = toml_path else {
+        return into_java_string(&mut env, Some("ERROR: No .toml file found in directory".to_string()));
+    };
+
+    match beatrice::BeatriceToml::load_from_tomlpath(&toml_path) {
+        Ok(toml) => {
+            #[derive(serde::Serialize)]
+            struct VoiceItem {
+                id: u32,
+                name: String,
+                description: String,
+                average_pitch: f64,
+            }
+            #[derive(serde::Serialize)]
+            struct ModelResponse {
+                name: String,
+                version: String,
+                description: String,
+                voices: Vec<VoiceItem>,
+            }
+            let voices: Vec<VoiceItem> = toml
+                .get_voices_sorted()
+                .into_iter()
+                .map(|(id, v)| VoiceItem {
+                    id,
+                    name: v.name.clone(),
+                    description: v.description.clone(),
+                    average_pitch: v.average_pitch,
+                })
+                .collect();
+            let response = ModelResponse {
+                name: toml.model.name,
+                version: toml.model.version,
+                description: toml.model.description,
+                voices,
+            };
+            let json = serde_json::to_string(&response).unwrap_or_else(|e| format!("ERROR: {e}"));
+            into_java_string(&mut env, Some(json))
+        }
+        Err(err) => into_java_string(&mut env, Some(format!("ERROR: {err}"))),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_top_initsnow_edge_1tts_1android_EdgeTtsNative_nativeIsBeatriceSupported(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+) -> jni::sys::jboolean {
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64", target_os = "windows"))]
+    {
+        1
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64", target_os = "windows")))]
+    {
+        0
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -527,3 +802,60 @@ pub extern "system" fn Java_top_initsnow_edge_1tts_1android_EdgeTtsNative_native
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_beatrice_config_deserialize() {
+        let json = r#"{
+            "enabled": true,
+            "model_path": "some/path",
+            "speaker_id": 1,
+            "pitch_shift": 2.5,
+            "formant_shift": -0.5
+        }"#;
+        let config: BeatriceConfig = serde_json::from_str(json).expect("valid config");
+        assert!(config.enabled);
+        assert_eq!(config.model_path, "some/path");
+        assert_eq!(config.speaker_id, 1);
+        assert!((config.pitch_shift - 2.5).abs() < 1e-4);
+        assert!((config.formant_shift - -0.5).abs() < 1e-4);
+        assert!((config.average_source_pitch - 52.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_beatrice_toml_deserialize() {
+        let toml_str = r#"
+            [model]
+            version = "2.0.0-rc.0"
+            name = "TestModel"
+            description = "A test model"
+
+            [voice.0]
+            name = "Speaker 0"
+            description = "Main speaker"
+            average_pitch = 60.0
+        "#;
+        let toml: beatrice::BeatriceToml = toml::from_str(toml_str).expect("valid toml");
+        assert_eq!(toml.model.name, "TestModel");
+        assert_eq!(toml.model.version, "2.0.0-rc.0");
+        assert_eq!(toml.voice["0"].name, "Speaker 0");
+        let sorted = toml.get_voices_sorted();
+        assert_eq!(sorted.len(), 1);
+        assert_eq!(sorted[0].0, 0);
+        assert_eq!(sorted[0].1.name, "Speaker 0");
+    }
+
+    #[test]
+    fn test_beatrice_resampler() {
+        let mut resampler = beatrice::BeatriceResampler::new(24000.0, 24000.0, 1, 1);
+        let input = vec![0.0f32; 240];
+        for i in 0..5 {
+            let beatrice_in = resampler.convert_to_beatrice_input(&input);
+            println!("chunk {i}: beatrice_in.len() = {}", beatrice_in.len());
+        }
+    }
+}
+
