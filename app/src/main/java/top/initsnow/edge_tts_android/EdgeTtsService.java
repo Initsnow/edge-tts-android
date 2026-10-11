@@ -275,7 +275,7 @@ public final class EdgeTtsService extends TextToSpeechService {
         if (resolved != null) {
             return resolved.getShortName();
         }
-        return "en-US-EmmaMultilingualNeural";
+        return EngineSettings.DEFAULT_VOICE_NAME;
     }
 
     private static String mapPercentage(int androidValue, String fallback) {

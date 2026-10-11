@@ -1,6 +1,6 @@
 [package]
 name = "edge-tts-android-rust"
-version = "0.1.0"
+version = "0.1.4"
 edition = "2024"
 
 [lib]
@@ -8,12 +8,12 @@ name = "edge_tts_android"
 crate-type = ["cdylib"]
 
 [dependencies]
-edge-tts-rust = { git = "https://github.com/Initsnow/edge-tts-rust", rev = "74d8e07f538165f827b5f1a9b4094e380d6f2879" }
+edge-tts-rust = { git = "https://github.com/Initsnow/edge-tts-rust", rev = "6225acf54a233839827e868c794633d1bd35d4f8" }
 futures-util = "0.3"
 jni = "0.21"
 minimp3 = "0.5"
 once_cell = "1.21"
-opus-decoder = "0.1"
+opus = "0.3"
 webm-iterable = "0.7"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

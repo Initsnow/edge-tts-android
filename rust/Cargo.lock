@@ -129,6 +129,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
+name = "audiopus_sys"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62314a1546a2064e033665d658e88c620a62904be945f8147e6b16c3db9f8651"
+dependencies = [
+ "cmake",
+ "log",
+ "pkg-config",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -268,6 +279,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
+name = "cmake"
+version = "0.1.58"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "colorchoice"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -394,14 +414,14 @@ dependencies = [
 
 [[package]]
 name = "edge-tts-android-rust"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "edge-tts-rust",
  "futures-util",
  "jni",
  "minimp3",
  "once_cell",
- "opus-decoder",
+ "opus",
  "rubato",
  "serde",
  "serde_json",
@@ -413,8 +433,8 @@ dependencies = [
 
 [[package]]
 name = "edge-tts-rust"
-version = "0.1.4"
-source = "git+https://github.com/Initsnow/edge-tts-rust?rev=74d8e07f538165f827b5f1a9b4094e380d6f2879#74d8e07f538165f827b5f1a9b4094e380d6f2879"
+version = "0.1.5"
+source = "git+https://github.com/Initsnow/edge-tts-rust?rev=6225acf54a233839827e868c794633d1bd35d4f8#6225acf54a233839827e868c794633d1bd35d4f8"
 dependencies = [
  "async-stream",
  "bytes",
@@ -1123,12 +1143,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
-name = "opus-decoder"
-version = "0.1.1"
+name = "opus"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15ae32c275dabb0cd2c863460bf349e9abc3568ba2abf0f9eb7b7d2edeeed07e"
+checksum = "4d3809943dff6fbad5f0484449ea26bdb9cb7d8efdf26ed50d3c7f227f69eb5c"
 dependencies = [
- "thiserror 2.0.18",
+ "audiopus_sys",
 ]
 
 [[package]]
@@ -1148,6 +1168,12 @@ name = "pin-utils"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
+
+[[package]]
+name = "pkg-config"
+version = "0.3.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "potential_utf"

@@ -18,7 +18,7 @@ use jni::sys::{jbyteArray, jstring};
 use std::convert::TryInto;
 use minimp3::{Decoder as Mp3Decoder, Error as Mp3Error};
 use once_cell::sync::Lazy;
-use opus_decoder::OpusDecoder;
+use opus::{Channels, Decoder as OpusDecoder};
 use tokio::runtime::{Builder, Runtime};
 use webm_iterable::WebmIterator;
 use webm_iterable::matroska_spec::{Block, MatroskaSpec, SimpleBlock};
@@ -469,7 +469,7 @@ fn spawn_synthesis_worker(
 
                 match codec {
                     AudioCodec::WebmOpus => {
-                        let mut opus_dec = match OpusDecoder::new(24000, 1) {
+                        let mut opus_dec = match OpusDecoder::new(24000, Channels::Mono) {
                             Ok(dec) => dec,
                             Err(error) => {
                                 decoder_session.fail(format!("Opus decoder init error: {error}"));
@@ -560,14 +560,14 @@ fn spawn_synthesis_worker(
             } else {
                 match codec {
                     AudioCodec::WebmOpus => {
-                        let mut opus_dec = match OpusDecoder::new(24000, 1) {
+                        let mut opus_dec = match OpusDecoder::new(24000, Channels::Mono) {
                             Ok(dec) => dec,
                             Err(error) => {
                                 decoder_session.fail(format!("Opus decoder init error: {error}"));
                                 return;
                             }
                         };
-                        let mut pcm_buf = vec![0i16; 5760];
+                        let mut i16_buf = vec![0i16; 5760];
                         let iter = WebmIterator::new(reader, &[]);
                         for tag in iter {
                             if decoder_stop.load(Ordering::SeqCst) {
@@ -576,10 +576,10 @@ fn spawn_synthesis_worker(
                             match tag {
                                 Ok(ref spec) => {
                                     let res = for_each_webm_frame(spec, |frame_data| {
-                                        match opus_dec.decode(frame_data, &mut pcm_buf, false) {
+                                        match opus_dec.decode(frame_data, &mut i16_buf, false) {
                                             Ok(samples_decoded) => {
                                                 let mut pcm_bytes = Vec::with_capacity(samples_decoded * 2);
-                                                for sample in &pcm_buf[..samples_decoded] {
+                                                for &sample in &i16_buf[..samples_decoded] {
                                                     pcm_bytes.extend_from_slice(&sample.to_le_bytes());
                                                 }
                                                 if !first_pcm_logged {
@@ -1043,7 +1043,7 @@ mod tests {
             request_id.clone(),
             Arc::clone(&session),
             "Hello test".to_string(),
-            "en-US-EmmaMultilingualNeural".to_string(),
+            "zh-CN-XiaoyiNeural".to_string(),
             "+0%".to_string(),
             "+0%".to_string(),
             "+0Hz".to_string(),

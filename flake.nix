@@ -29,6 +29,8 @@
           packages = with pkgs; [
             jdk17
             clang
+            cmake
+            ninja
             rustup
             cargo-binstall
             rust-analyzer

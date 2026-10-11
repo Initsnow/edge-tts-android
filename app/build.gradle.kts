@@ -53,8 +53,8 @@ android {
         applicationId = "top.initsnow.edge_tts_android"
         minSdk = 24
         targetSdk = 36
-        versionCode = 3
-        versionName = "0.1.3"
+        versionCode = 4
+        versionName = "0.1.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -160,10 +160,16 @@ val rustBuildJniLibs by tasks.registering {
         val outputDirFile = rustLibOutputDir.get().asFile
         val minApi = android.defaultConfig.minSdk ?: 24
         val isWindows = org.gradle.internal.os.OperatingSystem.current().isWindows
+        val cmakeToolchainFile = ndkDir.resolve("build/cmake/android.toolchain.cmake").absolutePath.replace('\\', '/')
         rustTargets.keys.forEach { abi ->
             providers.exec {
                 workingDir(rustProjectDir)
                 environment("ANDROID_NDK_HOME", ndkDir.absolutePath)
+                environment("CMAKE_TOOLCHAIN_FILE", cmakeToolchainFile)
+                environment("ANDROID_ABI", abi)
+                environment("ANDROID_PLATFORM", "android-$minApi")
+                environment("LIBOPUS_STATIC", "1")
+                environment("OPUS_STATIC", "1")
                 if (isWindows) {
                     val cmdList = mutableListOf(
                         "cargo",

@@ -4,8 +4,8 @@ import android.content.Context;
 import android.content.SharedPreferences;
 
 import androidx.preference.PreferenceManager;
-
 public final class EngineSettings {
+    public static final String DEFAULT_VOICE_NAME = "zh-CN-XiaoyiNeural";
     private static final String KEY_DEFAULT_VOICE = "default_voice";
     private static final String KEY_RATE = "default_rate";
     private static final String KEY_VOLUME = "default_volume";
@@ -30,7 +30,7 @@ public final class EngineSettings {
     }
 
     public String getDefaultVoice() {
-        return sharedPreferences.getString(KEY_DEFAULT_VOICE, "");
+        return sharedPreferences.getString(KEY_DEFAULT_VOICE, DEFAULT_VOICE_NAME);
     }
 
     public String getDefaultRate() {
