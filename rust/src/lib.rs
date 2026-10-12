@@ -37,6 +37,8 @@ static EDGE_TTS_CLIENT: Lazy<Result<EdgeTtsClient, String>> =
 
 #[cfg(target_os = "android")]
 const ANDROID_LOG_INFO: i32 = 4;
+#[cfg(target_os = "android")]
+const ANDROID_LOG_ERROR: i32 = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AudioCodec {
@@ -158,6 +160,7 @@ impl AudioBuffer {
     }
 
     fn fail(&self, error: String) {
+        log_error(&format!("AudioBuffer failed: {error}"));
         let mut state = self.state.lock().expect("audio state poisoned");
         state.error = Some(error);
         state.closed = true;
@@ -244,6 +247,7 @@ impl SynthesisSession {
     }
 
     fn fail(&self, error: String) {
+        log_error(&format!("SynthesisSession failed: {error}"));
         let mut state = self.pcm_state.lock().expect("pcm state poisoned");
         state.error = Some(error);
         state.finished = true;
@@ -743,6 +747,27 @@ fn log_latency(message: &str) {
     eprintln!("{message}");
 }
 
+fn log_error(message: &str) {
+    #[cfg(target_os = "android")]
+    unsafe {
+        unsafe extern "C" {
+            fn __android_log_write(prio: i32, tag: *const i8, text: *const i8) -> i32;
+        }
+
+        let tag = CString::new("EdgeTtsNative").expect("valid log tag");
+        if let Ok(text) = CString::new(message) {
+            let _ = __android_log_write(
+                ANDROID_LOG_ERROR,
+                tag.as_ptr().cast(),
+                text.as_ptr().cast(),
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "android"))]
+    eprintln!("[ERROR] {message}");
+}
+
 fn read_java_string(env: &mut JNIEnv<'_>, value: JString<'_>) -> Result<String, String> {
     env.get_string(&value)
         .map(|java_str| java_str.into())
@@ -803,6 +828,10 @@ pub extern "system" fn Java_top_initsnow_edge_1tts_1android_EdgeTtsNative_native
         Ok(())
     })();
 
+    if let Err(ref err) = result {
+        log_error(&format!("nativeBeginSynthesis failed: {err}"));
+    }
+
     into_java_string(&mut env, result.err())
 }
 
@@ -843,6 +872,10 @@ pub extern "system" fn Java_top_initsnow_edge_1tts_1android_EdgeTtsNative_native
         spawn_synthesis_worker(request_id, session, text, voice, rate, volume, pitch, beatrice_config);
         Ok(())
     })();
+
+    if let Err(ref err) = result {
+        log_error(&format!("nativeBeginSynthesisWithBeatrice failed: {err}"));
+    }
 
     into_java_string(&mut env, result.err())
 }

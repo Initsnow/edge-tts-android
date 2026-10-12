@@ -19,10 +19,16 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
 public final class EdgeTtsService extends TextToSpeechService {
-    private static final String TAG = "EdgeTtsLatency";
+    private static final String TAG = "EdgeTtsService";
     private static final int SAMPLE_RATE_HZ = 24_000;
     private static final int CHANNEL_COUNT = 1;
     private static final int PCM_AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT;
+
+    private static volatile String sLastSynthesisError;
+
+    public static String getLastSynthesisError() {
+        return sLastSynthesisError;
+    }
 
     private final AtomicReference<String> currentRequestId = new AtomicReference<>();
 
@@ -138,12 +144,16 @@ public final class EdgeTtsService extends TextToSpeechService {
         String requestId = UUID.randomUUID().toString();
         long requestStartMs = SystemClock.elapsedRealtime();
         currentRequestId.set(requestId);
+        sLastSynthesisError = null;
         try {
             List<VoiceInfo> voices = repository().loadVoices(false);
             String text = request.getCharSequenceText() == null
                     ? ""
                     : request.getCharSequenceText().toString();
             if (text.trim().isEmpty()) {
+                String emptyMsg = "Synthesis request text is empty";
+                Log.w(TAG, emptyMsg);
+                sLastSynthesisError = emptyMsg;
                 callback.error(TextToSpeech.ERROR_INVALID_REQUEST);
                 return;
             }
@@ -177,6 +187,8 @@ public final class EdgeTtsService extends TextToSpeechService {
                             pitch
                     );
             if (error != null && !error.isEmpty()) {
+                Log.e(TAG, "request=" + requestId + " beginSynthesis error: " + error);
+                sLastSynthesisError = error;
                 callback.error(TextToSpeech.ERROR_NETWORK);
                 return;
             }
@@ -186,6 +198,9 @@ public final class EdgeTtsService extends TextToSpeechService {
 
             int startStatus = callback.start(SAMPLE_RATE_HZ, PCM_AUDIO_FORMAT, CHANNEL_COUNT);
             if (startStatus != TextToSpeech.SUCCESS) {
+                String statusMsg = "Audio callback.start failed with status: " + startStatus;
+                Log.e(TAG, "request=" + requestId + " " + statusMsg);
+                sLastSynthesisError = statusMsg;
                 callback.error(TextToSpeech.ERROR_OUTPUT);
                 return;
             }
@@ -207,6 +222,9 @@ public final class EdgeTtsService extends TextToSpeechService {
                 }
                 int audioStatus = callback.audioAvailable(chunk, 0, chunk.length);
                 if (audioStatus != TextToSpeech.SUCCESS) {
+                    String audioMsg = "Audio callback.audioAvailable failed with status: " + audioStatus;
+                    Log.e(TAG, "request=" + requestId + " " + audioMsg);
+                    sLastSynthesisError = audioMsg;
                     callback.error(TextToSpeech.ERROR_OUTPUT);
                     return;
                 }
@@ -221,6 +239,8 @@ public final class EdgeTtsService extends TextToSpeechService {
 
             String streamError = EdgeTtsNative.getLastError(requestId);
             if (streamError != null && !streamError.isEmpty()) {
+                Log.e(TAG, "request=" + requestId + " stream error: " + streamError);
+                sLastSynthesisError = streamError;
                 callback.error(mapError(streamError));
                 return;
             }
@@ -229,7 +249,10 @@ public final class EdgeTtsService extends TextToSpeechService {
                     + " synthesis done in "
                     + (SystemClock.elapsedRealtime() - requestStartMs) + "ms");
             callback.done();
-        } catch (IOException exception) {
+        } catch (Exception exception) {
+            String exMsg = exception.getMessage() != null ? exception.getMessage() : exception.getClass().getSimpleName();
+            Log.e(TAG, "request=" + requestId + " onSynthesizeText exception: " + exMsg, exception);
+            sLastSynthesisError = exMsg;
             callback.error(TextToSpeech.ERROR_NETWORK);
         } finally {
             EdgeTtsNative.stop(requestId);

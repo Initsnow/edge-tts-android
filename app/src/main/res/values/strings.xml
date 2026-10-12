@@ -4,6 +4,8 @@
     <string name="status_label">Status</string>
     <string name="status_loading_voices">Loading voices…</string>
     <string name="status_testing_voice">Testing voice…</string>
+    <string name="status_synthesizing">Synthesizing audio…</string>
+    <string name="status_playing_voice">Playing audio…</string>
     <string name="status_error_format">Error: %1$s</string>
     <string name="default_test_text">Hello from Edge TTS on Android.</string>
     <string name="voice_label">Default voice</string>
@@ -29,7 +31,7 @@
     <string name="volume_helper">Examples: +0%, +25%, -10%</string>
     <string name="default_voice_missing">No voices loaded yet.</string>
     <string name="system_settings_unavailable">System TTS settings are unavailable on this device.</string>
-    <string name="test_completed">Test utterance queued.</string>
+    <string name="test_completed">Test playback completed.</string>
     <string name="engine_check_passed">Voice data check passed.</string>
     <string name="voice_section_title">Voice selection</string>
     <string name="engine_section_title">Engine defaults</string>

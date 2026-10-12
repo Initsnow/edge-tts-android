@@ -9,6 +9,7 @@ import android.os.Environment;
 import android.provider.DocumentsContract;
 import android.provider.Settings;
 import android.speech.tts.TextToSpeech;
+import android.speech.tts.UtteranceProgressListener;
 import android.speech.tts.Voice;
 import android.view.View;
 import android.widget.ArrayAdapter;
@@ -20,6 +21,7 @@ import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.widget.NestedScrollView;
 
 import com.google.android.material.button.MaterialButton;
 import com.google.android.material.materialswitch.MaterialSwitch;
@@ -40,6 +42,7 @@ import java.util.concurrent.Executors;
 public final class MainActivity extends AppCompatActivity {
     private final ExecutorService executorService = Executors.newSingleThreadExecutor();
 
+    private NestedScrollView mainScrollView;
     private TextView statusView;
     private View statusCard;
     private TextInputEditText selectedVoiceEditText;
@@ -112,6 +115,7 @@ public final class MainActivity extends AppCompatActivity {
         voiceRepository = VoiceRepository.getInstance(this);
         engineSettings = EngineSettings.from(this);
 
+        mainScrollView = findViewById(R.id.mainScrollView);
         statusView = findViewById(R.id.statusView);
         statusCard = findViewById(R.id.statusCard);
         selectedVoiceEditText = findViewById(R.id.selectedVoiceEditText);
@@ -385,9 +389,41 @@ public final class MainActivity extends AppCompatActivity {
         textToSpeech = new TextToSpeech(getApplicationContext(), status -> {
             try {
                 if (status != TextToSpeech.SUCCESS || textToSpeech == null) {
-                    setStatus(getString(R.string.status_error_format, "TTS init failed"));
+                    runOnUiThread(() -> setStatus(getString(R.string.status_error_format, "TTS init failed (" + status + ")")));
                     return;
                 }
+                textToSpeech.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                    @Override
+                    public void onStart(String utteranceId) {
+                        runOnUiThread(() -> setStatus(getString(R.string.status_playing_voice)));
+                    }
+
+                    @Override
+                    public void onDone(String utteranceId) {
+                        runOnUiThread(() -> setStatus(getString(R.string.test_completed)));
+                    }
+
+                    @Override
+                    public void onError(String utteranceId) {
+                        onError(utteranceId, TextToSpeech.ERROR);
+                    }
+
+                    @Override
+                    public void onError(String utteranceId, int errorCode) {
+                        String detail = EdgeTtsService.getLastSynthesisError();
+                        String errorText = (detail != null && !detail.isEmpty())
+                                ? detail
+                                : formatTtsErrorCode(errorCode);
+                        runOnUiThread(() -> {
+                            setStatus(getString(R.string.status_error_format, errorText));
+                            Toast.makeText(MainActivity.this, getString(R.string.status_error_format, errorText), Toast.LENGTH_LONG).show();
+                            if (mainScrollView != null) {
+                                mainScrollView.smoothScrollTo(0, 0);
+                            }
+                        });
+                    }
+                });
+
                 String selectedVoiceName = engineSettings.getDefaultVoice();
                 if (!selectedVoiceName.isEmpty()) {
                     Set<Voice> availableVoices = textToSpeech.getVoices();
@@ -409,15 +445,15 @@ public final class MainActivity extends AppCompatActivity {
                         "main-activity-preview"
                 );
                 if (speakStatus != TextToSpeech.SUCCESS) {
-                    setStatus(getString(R.string.status_error_format, "Speak request failed"));
+                    runOnUiThread(() -> setStatus(getString(R.string.status_error_format, "Speak request failed (" + speakStatus + ")")));
                     return;
                 }
-                setStatus(getString(R.string.test_completed));
+                runOnUiThread(() -> setStatus(getString(R.string.status_synthesizing)));
             } catch (RuntimeException exception) {
-                setStatus(getString(
+                runOnUiThread(() -> setStatus(getString(
                         R.string.status_error_format,
                         exception.getClass().getSimpleName()
-                ));
+                )));
                 if (textToSpeech != null) {
                     try {
                         textToSpeech.shutdown();
@@ -428,6 +464,27 @@ public final class MainActivity extends AppCompatActivity {
                 }
             }
         }, getPackageName());
+    }
+
+    private static String formatTtsErrorCode(int errorCode) {
+        switch (errorCode) {
+            case TextToSpeech.ERROR_NETWORK:
+                return "Network error (connection rejected or failed)";
+            case TextToSpeech.ERROR_NETWORK_TIMEOUT:
+                return "Network timeout";
+            case TextToSpeech.ERROR_NOT_INSTALLED_YET:
+                return "Voice data not installed";
+            case TextToSpeech.ERROR_OUTPUT:
+                return "Audio output error";
+            case TextToSpeech.ERROR_SERVICE:
+                return "TTS service error";
+            case TextToSpeech.ERROR_SYNTHESIS:
+                return "Speech synthesis failed";
+            case TextToSpeech.ERROR_INVALID_REQUEST:
+                return "Invalid request";
+            default:
+                return "TTS error code " + errorCode;
+        }
     }
 
     private void openSystemTtsSettings() {
