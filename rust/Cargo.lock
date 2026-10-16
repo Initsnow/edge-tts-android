@@ -414,7 +414,7 @@ dependencies = [
 
 [[package]]
 name = "edge-tts-android-rust"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "edge-tts-rust",
  "futures-util",
@@ -433,8 +433,8 @@ dependencies = [
 
 [[package]]
 name = "edge-tts-rust"
-version = "0.1.6"
-source = "git+https://github.com/Initsnow/edge-tts-rust?rev=0e496d448c6a14e99da580a0d0b1af85279e0250#0e496d448c6a14e99da580a0d0b1af85279e0250"
+version = "0.1.7"
+source = "git+https://github.com/Initsnow/edge-tts-rust?rev=6c9aa62eef53da4650bc34fa3e116ca34d875cfd#6c9aa62eef53da4650bc34fa3e116ca34d875cfd"
 dependencies = [
  "async-stream",
  "bytes",
