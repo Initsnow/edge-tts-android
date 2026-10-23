@@ -20,7 +20,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 public final class EdgeTtsService extends TextToSpeechService {
     private static final String TAG = "EdgeTtsService";
-    private static final int SAMPLE_RATE_HZ = 24_000;
+    private static final int SAMPLE_RATE_HZ = 48_000;
     private static final int CHANNEL_COUNT = 1;
     private static final int PCM_AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT;
 

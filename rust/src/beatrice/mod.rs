@@ -21,3 +21,9 @@ pub use beatrice_rc_0::BeatriceRC0;
 pub use beatrice_toml::{BeatriceToml, ModelInfo, Portrait, Voice};
 pub use errors::BeatriceError;
 pub use resampler::BeatriceResampler;
+
+/// All bundled model versions expose nine discrete formant-shift embeddings,
+/// corresponding to -2.0..=2.0 semitones at 0.5-semitone steps.
+pub fn formant_shift_index(formant_shift: f64) -> usize {
+    ((formant_shift * 2.0 + 4.0).round() as isize).clamp(0, 8) as usize
+}

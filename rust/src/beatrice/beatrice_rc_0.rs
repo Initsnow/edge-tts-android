@@ -4,6 +4,7 @@ use std::{
     str::FromStr,
 };
 
+use super::formant_shift_index;
 use super::{beatrice::Beatrice, bindings::*, errors::BeatriceError, resampler::BeatriceResampler};
 
 struct BeatriceLibData {
@@ -374,11 +375,9 @@ impl BeatriceRC0 {
     }
 
     pub fn set_formant_shift(&mut self, formant_shift: f64) {
-        self.info.formant_shift = formant_shift;
+        let index = formant_shift_index(formant_shift);
+        self.info.formant_shift = (index as f64 - 4.0) / 2.0;
 
-        let index = (self.info.formant_shift * 2.0 + 4.0).round() as isize;
-
-        debug_assert!((0..9).contains(&index));
         debug_assert!(
             self.lib.formant_shift_embeddings.len()
                 == 9 * BEATRICE_WAVEFORM_GENERATOR_HIDDEN_CHANNELS as usize
@@ -387,10 +386,9 @@ impl BeatriceRC0 {
         unsafe {
             Beatrice20rc0_SetFormantShiftEmbedding(
                 self.lib.embedding_setter,
-                self.lib
-                    .formant_shift_embeddings
-                    .as_ptr()
-                    .offset(index * BEATRICE_WAVEFORM_GENERATOR_HIDDEN_CHANNELS as isize),
+                self.lib.formant_shift_embeddings.as_ptr().offset(
+                    (index * BEATRICE_WAVEFORM_GENERATOR_HIDDEN_CHANNELS as usize) as isize,
+                ),
                 self.lib.embedding_context,
                 self.lib.waveform_context,
             );
@@ -644,11 +642,9 @@ impl Beatrice for BeatriceRC0 {
     }
 
     fn set_formant_shift(&mut self, formant_shift: f64) {
-        self.info.formant_shift = formant_shift;
+        let index = formant_shift_index(formant_shift);
+        self.info.formant_shift = (index as f64 - 4.0) / 2.0;
 
-        let index = (self.info.formant_shift * 2.0 + 4.0).round() as isize;
-
-        debug_assert!((0..9).contains(&index));
         debug_assert!(
             self.lib.formant_shift_embeddings.len()
                 == 9 * BEATRICE_WAVEFORM_GENERATOR_HIDDEN_CHANNELS as usize
@@ -657,10 +653,9 @@ impl Beatrice for BeatriceRC0 {
         unsafe {
             Beatrice20rc0_SetFormantShiftEmbedding(
                 self.lib.embedding_setter,
-                self.lib
-                    .formant_shift_embeddings
-                    .as_ptr()
-                    .offset(index * BEATRICE_WAVEFORM_GENERATOR_HIDDEN_CHANNELS as isize),
+                self.lib.formant_shift_embeddings.as_ptr().offset(
+                    (index * BEATRICE_WAVEFORM_GENERATOR_HIDDEN_CHANNELS as usize) as isize,
+                ),
                 self.lib.embedding_context,
                 self.lib.waveform_context,
             );

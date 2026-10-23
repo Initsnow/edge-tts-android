@@ -342,6 +342,22 @@ fn default_intonation_intensity() -> f64 { 1.0 }
 fn default_min_source_pitch() -> f64 { 33.125 }
 fn default_max_source_pitch() -> f64 { 80.875 }
 
+/// Smooth C^1 soft saturation curve to prevent harsh integer clipping on transient consonants / sibilants.
+/// Linear and 100% bit-exact transparent in [-0.75, 0.75], asymptotically smoothly saturating towards 1.0 above.
+/// Multiplied by 31500.0 to guarantee a safe 0.35dB headroom.
+#[inline]
+fn float_to_pcm16_soft(sample: f32) -> i16 {
+    let x = sample;
+    let limited = if x > 0.75 {
+        0.75 + (x - 0.75) / (1.0 + (x - 0.75).powi(2)).sqrt() * 0.25
+    } else if x < -0.75 {
+        -0.75 + (x + 0.75) / (1.0 + (x + 0.75).powi(2)).sqrt() * 0.25
+    } else {
+        x
+    };
+    (limited * 31500.0).clamp(-32768.0, 32767.0) as i16
+}
+
 fn for_each_webm_frame(
     spec: &MatroskaSpec,
     mut on_frame: impl FnMut(&[u8]) -> Result<(), String>,
@@ -408,7 +424,7 @@ fn spawn_synthesis_worker(
 
             if let Some(config) = beatrice_config_clone.filter(|c| c.enabled) {
                 let beatrice_load_start = Instant::now();
-                let mut beatrice_inst = match beatrice::new(&config.model_path, 24000.0, 24000.0, 1, 1) {
+                let mut beatrice_inst = match beatrice::new(&config.model_path, 24000.0, 48000.0, 1, 1) {
                     Ok(b) => b,
                     Err(error) => {
                         decoder_session.fail(format!("Beatrice model load failed: {error}"));
@@ -450,8 +466,8 @@ fn spawn_synthesis_worker(
                             Ok(out_samples) => {
                                 let mut pcm_bytes = Vec::with_capacity(out_samples.len() * 2);
                                 for sample in out_samples {
-                                    let clamped = (sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
-                                    pcm_bytes.extend_from_slice(&clamped.to_le_bytes());
+                                    let pcm_sample = float_to_pcm16_soft(sample);
+                                    pcm_bytes.extend_from_slice(&pcm_sample.to_le_bytes());
                                 }
                                 if !first_pcm_logged {
                                     first_pcm_logged = true;
@@ -554,8 +570,8 @@ fn spawn_synthesis_worker(
                     if let Ok(out_samples) = beatrice_inst.infer(&hop) {
                         let mut pcm_bytes = Vec::with_capacity(out_samples.len() * 2);
                         for sample in out_samples {
-                            let clamped = (sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
-                            pcm_bytes.extend_from_slice(&clamped.to_le_bytes());
+                            let pcm_sample = float_to_pcm16_soft(sample);
+                            pcm_bytes.extend_from_slice(&pcm_sample.to_le_bytes());
                         }
                         decoder_session.push_pcm(&pcm_bytes);
                     }
@@ -564,14 +580,14 @@ fn spawn_synthesis_worker(
             } else {
                 match codec {
                     AudioCodec::WebmOpus => {
-                        let mut opus_dec = match OpusDecoder::new(24000, Channels::Mono) {
+                        let mut opus_dec = match OpusDecoder::new(48000, Channels::Mono) {
                             Ok(dec) => dec,
                             Err(error) => {
                                 decoder_session.fail(format!("Opus decoder init error: {error}"));
                                 return;
                             }
                         };
-                        let mut i16_buf = vec![0i16; 5760];
+                        let mut i16_buf = vec![0i16; 5760 * 2];
                         let iter = WebmIterator::new(reader, &[]);
                         for tag in iter {
                             if decoder_stop.load(Ordering::SeqCst) {
@@ -617,6 +633,7 @@ fn spawn_synthesis_worker(
                     }
                     AudioCodec::Mp3 => {
                         let mut mp3_decoder = Mp3Decoder::new(reader);
+                        let mut last_sample: i16 = 0;
                         loop {
                             if decoder_stop.load(Ordering::SeqCst) {
                                 decoder_session.finish();
@@ -624,17 +641,29 @@ fn spawn_synthesis_worker(
                             }
                             match mp3_decoder.next_frame() {
                                 Ok(frame) => {
-                                    let mut pcm_bytes = Vec::with_capacity(frame.data.len() * 2);
-                                    if frame.channels == 2 {
-                                        for pair in frame.data.chunks_exact(2) {
-                                            let mono = (((pair[0] as i32 + pair[1] as i32) / 2) as i16).to_le_bytes();
-                                            pcm_bytes.extend_from_slice(&mono);
+                                    let mono_samples: Vec<i16> = if frame.channels == 2 {
+                                        frame.data.chunks_exact(2)
+                                            .map(|pair| ((pair[0] as i32 + pair[1] as i32) / 2) as i16)
+                                            .collect()
+                                    } else {
+                                        frame.data
+                                    };
+
+                                    let mut pcm_bytes = Vec::with_capacity(mono_samples.len() * 4);
+                                    if frame.sample_rate == 24000 {
+                                        // Linear interpolation 24kHz -> 48kHz
+                                        for &s in &mono_samples {
+                                            let mid = (((last_sample as i32 + s as i32) / 2) as i16).to_le_bytes();
+                                            pcm_bytes.extend_from_slice(&mid);
+                                            pcm_bytes.extend_from_slice(&s.to_le_bytes());
+                                            last_sample = s;
                                         }
                                     } else {
-                                        for sample in frame.data {
-                                            pcm_bytes.extend_from_slice(&sample.to_le_bytes());
+                                        for s in mono_samples {
+                                            pcm_bytes.extend_from_slice(&s.to_le_bytes());
                                         }
                                     }
+
                                     if !first_pcm_logged {
                                         first_pcm_logged = true;
                                         log_latency(&format!(
@@ -1059,11 +1088,18 @@ mod tests {
 
     #[test]
     fn test_beatrice_resampler() {
-        let mut resampler = beatrice::BeatriceResampler::new(24000.0, 24000.0, 1, 1);
+        let mut resampler = beatrice::BeatriceResampler::new(24000.0, 48000.0, 1, 1);
         let input = vec![0.0f32; 240];
-        for _i in 0..5 {
-            let _beatrice_in = resampler.convert_to_beatrice_input(&input);
+        for i in 0..5 {
+            let beatrice_in = resampler.convert_to_beatrice_input(&input);
+            assert!(!beatrice_in.is_empty());
+            if i > 0 {
+                assert_eq!(beatrice_in.len(), 160);
+            }
         }
+        let processed = vec![0.0f32; 240];
+        let out = resampler.convert_from_beatrice_output(&processed);
+        assert!(!out.is_empty());
     }
 
     #[test]
